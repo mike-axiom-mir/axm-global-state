@@ -1,15 +1,15 @@
 # Action Report — Proof 020: replay checkpoint across partial-compaction floor
 
 Date: 2026-09-15
-Status: **CANDIDATE / CI PENDING / EXPERIMENTAL**
+Status: **TEST PASS / EXPERIMENTAL**
 
 ## Goal
 
 Prove a truthful recovery path for a client whose verified mutation revision is older than Proof 018's partial-receipt compaction floor.
 
-Proof 019 already covers the separate full-epoch case, where a trusted full-head checkpoint retires old identity state and a lagging client adopts the new epoch. Proof 020 instead preserves Proof 018's old proposal-ID semantics and gives a lagging client a deterministic replay checkpoint at the partial-compaction floor.
+Proof 019 covers the separate full-epoch case, where a trusted full-head checkpoint retires old identity state and a lagging client adopts the new epoch. Proof 020 instead preserves Proof 018's old proposal-ID semantics and gives a lagging client a deterministic replay checkpoint at the partial-compaction floor.
 
-## Candidate model
+## Tested model
 
 `src/replay-checkpoint.mjs` creates a deterministic checkpoint package containing:
 
@@ -31,19 +31,53 @@ For a checkpoint at mutation revision R and logical tick T:
 
 This prevents a checkpoint from silently dropping a compacted-prefix command that has not happened yet, or omitting/double-handling a suffix command that should already have happened.
 
-## Candidate fixture
+## Tested fixture
 
-- build accepted revisions 1–40 with command tick `revision * 10`;
-- partially compact receipts 1–32 using Proof 018;
-- demonstrate a lagging client at revision 10 cannot request history below floor 32;
-- accept/persist revision 41 after compaction;
-- build a replay checkpoint at revision 32 / tick 320;
-- serialize and re-verify that checkpoint against an explicit trusted checkpoint digest;
-- client adopts checkpoint 32, requests only receipts 33–41, and advances to tick 600;
-- resulting state must exactly equal uninterrupted replay from genesis through all 41 accepted commands;
-- checkpoint tick 319 must reject because compacted proposal 32 occurs at tick 320;
-- checkpoint tick 330 must reject because retained proposal 33 occurs at tick 330;
-- tampered checkpoint state, wrong trusted digest, wrong expected mutation head, and retained-suffix sequence gap must fail closed.
+- built accepted revisions 1–40 with command tick `revision * 10`;
+- partially compacted receipts 1–32 using Proof 018;
+- demonstrated a lagging client at revision 10 cannot request history below floor 32;
+- accepted/persisted revision 41 after compaction;
+- built a replay checkpoint at revision 32 / tick 320;
+- serialized and re-verified that checkpoint against an explicit trusted checkpoint digest;
+- client adopted checkpoint 32, replayed only receipts 33–41, and advanced to tick 600;
+- resulting state exactly matched uninterrupted replay from genesis through all 41 accepted commands;
+- checkpoint tick 319 rejected because compacted proposal 32 occurs at tick 320;
+- checkpoint tick 330 rejected because retained proposal 33 occurs at tick 330;
+- tampered checkpoint state, wrong trusted digest, wrong expected mutation head, and retained-suffix sequence gap failed closed.
+
+## CI evidence
+
+Tested candidate head: `92b8b5f29b4279f98f0e78014c8cfd00b13c8f3d`.
+
+Consolidated Global State regression:
+
+- run: `35017926202`
+- job: `104545985370`
+- result: **SUCCESS**
+- executable proof label: `AXM Global State proof 020 replay checkpoint across partial-compaction floor: PASS`
+- Proof 017 checkpoint epoch compaction: **PASS**
+- Proof 018 partial receipt payload compaction: **PASS**
+- Proof 019 full-epoch lagging-client checkpoint adoption: **PASS**
+- all retained durable-authority, interval-time, Chromium portability, browser transport/restart, WebSocket reconnect, fully-cold resume and fully-cold elapsed-time regressions: **PASS**
+
+Observed Proof 020 result:
+
+```text
+laggingClientRevision: 10
+compactionFloorRevision: 32
+checkpointTick: 320
+checkpointAppliedCommandFingerprints: 32
+retainedSuffixReceipts: 9
+resumedRevision: 41
+targetTick: 600
+finalStateDigest: fnv1a32:1dfc90e1
+unsafeEarlyCheckpointRejected: true
+unsafeLateCheckpointRejected: true
+tamperedCheckpointRejected: true
+suffixGapRejected: true
+```
+
+This report-only evidence commit still requires one final consolidated run before integration so the merged head itself remains evidence-clean.
 
 ## Important continuity truth
 
@@ -68,9 +102,9 @@ Neither silently replaces the other.
 
 ## Truth boundary
 
-Do not claim PASS until the consolidated exact-head regression suite succeeds against current main, including Proofs 017, 018 and 019.
+Proof 020 is tested experimental evidence, not production checkpoint infrastructure.
 
-Even if green, Proof 020 will not establish:
+It does not establish:
 
 - cryptographic checkpoint authenticity;
 - automatic checkpoint discovery/distribution;
@@ -82,6 +116,6 @@ Even if green, Proof 020 will not establish:
 - concurrent writers or distributed consensus;
 - production deployment/scale.
 
-## Next safe rung if green
+## Next safe rung
 
 Carry the same partial-compaction replay-checkpoint handoff through real Chromium/local storage so a browser below the compaction floor can adopt the verified checkpoint, fetch only the retained suffix, and reconstruct the same current state without a full world-snapshot service.
