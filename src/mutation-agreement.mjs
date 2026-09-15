@@ -237,6 +237,9 @@ export function normalizeAcceptedReceipts(
     toRevision: expectedSequence - 1,
     head: currentHead,
     receipts: Object.freeze(ordered.map((receipt) => Object.freeze(receipt))),
-    commands: Object.freeze(ordered.map((receipt) => Object.freeze(clone(receipt.command))))
+    commands: Object.freeze(ordered.map((receipt) => Object.freeze({
+      id: receipt.proposalId,
+      ...clone(receipt.command)
+    })))
   });
 }
