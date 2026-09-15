@@ -7,6 +7,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 import { WebSocketServer } from 'ws';
+import { createLogicalTimeAnchor, observeLogicalTime } from '../src/logical-time-anchor.mjs';
 import { normalizeAcceptedReceipts } from '../src/mutation-agreement.mjs';
 import {
   advanceCatchupMeasured,
@@ -20,9 +21,6 @@ const tempDir = await mkdtemp(path.join(os.tmpdir(), 'axm-global-state-proof-011
 const historyPath = path.join(tempDir, 'accepted-history.json');
 const userDataDir = path.join(tempDir, 'browser-profile');
 
-const sleepTick = 600;
-const wakeTick = 86_400;
-
 const mime = new Map([
   ['.html', 'text/html; charset=utf-8'],
   ['.mjs', 'text/javascript; charset=utf-8'],
@@ -35,7 +33,6 @@ const rules = Object.freeze({
   recurringEvery: 60,
   recurringRewardMilli: 7
 });
-
 const baseStateConfig = Object.freeze({
   tick: 0,
   stockMilli: 1000,
@@ -45,6 +42,20 @@ const baseStateConfig = Object.freeze({
     Object.freeze({ id: 'shared-build', atTick: 120, rewardMilli: 25 })
   ])
 });
+const timeAnchor = createLogicalTimeAnchor({
+  anchorUnixMs: 1_800_000_000_000,
+  anchorTick: 0,
+  tickDurationMs: 1000,
+  clockSourceId: 'proof-explicit-clock'
+});
+const sleepObservedUnixMs = 1_800_003_600_000;
+const wakeObservedUnixMs = 1_800_086_400_000;
+const sleepObservation = observeLogicalTime(timeAnchor, sleepObservedUnixMs);
+const wakeObservation = observeLogicalTime(timeAnchor, wakeObservedUnixMs);
+
+assert.equal(sleepObservation.targetTick, 3600);
+assert.equal(wakeObservation.targetTick, 86_400);
+assert.equal(wakeObservation.targetTick - sleepObservation.targetTick, 82_800);
 
 function makeBaseState() {
   return createState(structuredClone(baseStateConfig));
@@ -139,7 +150,7 @@ async function startRelay(authority, requestedPort = 0) {
     try {
       const url = new URL(request.url, 'http://127.0.0.1');
       const relative = decodeURIComponent(url.pathname).replace(/^\/+/, '');
-      const requested = path.resolve(repoRoot, relative || 'tests/browser-process-restart-proof.html');
+      const requested = path.resolve(repoRoot, relative || 'tests/browser-cold-time-proof.html');
       const withinRoot = requested === repoRoot || requested.startsWith(`${repoRoot}${path.sep}`);
       if (!withinRoot) {
         response.writeHead(403).end('forbidden');
@@ -194,7 +205,7 @@ async function startRelay(authority, requestedPort = 0) {
 
   return {
     port,
-    pageUrl: `http://127.0.0.1:${port}/tests/browser-process-restart-proof.html`,
+    pageUrl: `http://127.0.0.1:${port}/tests/browser-cold-time-proof.html`,
     websocketUrl: `ws://127.0.0.1:${port}/receipts`,
     syncRequests,
     failure: () => relayFailure,
@@ -202,7 +213,7 @@ async function startRelay(authority, requestedPort = 0) {
   };
 }
 
-async function runBrowserProcess({ pageUrl, websocketUrl, expectedRevision, targetTick }) {
+async function runBrowserProcess({ pageUrl, websocketUrl, expectedRevision, observedUnixMs }) {
   const context = await chromium.launchPersistentContext(userDataDir, { headless: true });
   const page = await context.newPage();
   const browserErrors = [];
@@ -212,20 +223,21 @@ async function runBrowserProcess({ pageUrl, websocketUrl, expectedRevision, targ
   page.on('pageerror', (error) => browserErrors.push(String(error)));
 
   await page.goto(pageUrl, { waitUntil: 'load' });
-  await page.evaluate((config) => window.__AXM_RESTART_PROOF__.configure(config), {
+  await page.evaluate((config) => window.__AXM_COLD_TIME_PROOF__.configure(config), {
     websocketUrl,
     checkpointRevision: 0,
     checkpointHead,
     expectedRevision,
     baseState: baseStateConfig,
-    targetTick,
+    timeAnchor,
+    observedUnixMs,
     rules
   });
   await page.locator("#status[data-status='pass']").waitFor({ timeout: 30_000 });
 
-  const evidence = await page.evaluate(() => window.__AXM_RESTART_PROOF__.evidence());
-  const storageSnapshot = await page.evaluate(() => window.__AXM_RESTART_PROOF__.storageSnapshot());
-  await page.evaluate(() => window.__AXM_RESTART_PROOF__.close());
+  const evidence = await page.evaluate(() => window.__AXM_COLD_TIME_PROOF__.evidence());
+  const storageSnapshot = await page.evaluate(() => window.__AXM_COLD_TIME_PROOF__.storageSnapshot());
+  await page.evaluate(() => window.__AXM_COLD_TIME_PROOF__.close());
   assert.deepEqual(browserErrors, [], `browser errors: ${browserErrors.join(' | ')}`);
   await context.close();
   return { evidence, storageSnapshot };
@@ -251,11 +263,12 @@ try {
     pageUrl: firstRelay.pageUrl,
     websocketUrl: firstRelay.websocketUrl,
     expectedRevision: 1,
-    targetTick: sleepTick
+    observedUnixMs: sleepObservedUnixMs
   });
   if (firstRelay.failure()) throw firstRelay.failure();
   assert.equal(sleepingBrowser.evidence.normalizedRevision, 1);
-  assert.equal(sleepingBrowser.evidence.state.tick, sleepTick);
+  assert.equal(sleepingBrowser.evidence.timeObservation.targetTick, sleepObservation.targetTick);
+  assert.equal(sleepingBrowser.evidence.state.tick, sleepObservation.targetTick);
   assert.equal(sleepingBrowser.evidence.normalizedHead, receiptA.acceptedHead);
   assert.equal(sleepingBrowser.evidence.restoredReceiptCount, 0);
   assert.match(sleepingBrowser.storageSnapshot, /proposal-a/);
@@ -280,11 +293,10 @@ try {
   await firstAuthority.killHard();
   firstAuthority = null;
 
-  // Fully cold interval: the browser, relay and authority are all absent. No
-  // product transitions are evaluated here. The next runtime is simply given a
-  // later trusted logical tick when it wakes.
+  // Fully cold interval: browser, relay and authority are absent. No transition
+  // loop runs here. Wake time is later supplied as an explicit clock observation
+  // against the immutable time anchor.
   await new Promise((resolve) => setTimeout(resolve, 50));
-  assert.ok(wakeTick > sleepTick);
 
   secondAuthority = startAuthorityService();
   const secondReady = await secondAuthority.ready;
@@ -296,7 +308,7 @@ try {
     pageUrl: secondRelay.pageUrl,
     websocketUrl: secondRelay.websocketUrl,
     expectedRevision: 2,
-    targetTick: wakeTick
+    observedUnixMs: wakeObservedUnixMs
   });
   if (secondRelay.failure()) throw secondRelay.failure();
 
@@ -305,7 +317,8 @@ try {
   assert.deepEqual(wakingBrowser.evidence.syncRequests, [1]);
   assert.deepEqual(secondRelay.syncRequests, [1]);
   assert.equal(wakingBrowser.evidence.normalizedRevision, 2);
-  assert.equal(wakingBrowser.evidence.state.tick, wakeTick);
+  assert.deepEqual(wakingBrowser.evidence.timeObservation, wakeObservation);
+  assert.equal(wakingBrowser.evidence.state.tick, wakeObservation.targetTick);
   assert.ok(wakingBrowser.evidence.state.recurringCount > sleepingBrowser.evidence.state.recurringCount);
   assert.notEqual(wakingBrowser.evidence.digest, sleepingBrowser.evidence.digest);
 
@@ -315,28 +328,33 @@ try {
     checkpointRevision: 0,
     checkpointHead
   });
-  const measured = advanceCatchupMeasured(makeBaseState(), wakeTick, {
+  const nodeWakeObservation = observeLogicalTime(timeAnchor, wakeObservedUnixMs);
+  const measured = advanceCatchupMeasured(makeBaseState(), nodeWakeObservation.targetTick, {
     commands: normalized.commands,
     rules
   });
   const referenceDigest = digestState(measured.state);
 
+  assert.deepEqual(wakingBrowser.evidence.timeObservation, nodeWakeObservation);
   assert.deepEqual(wakingBrowser.evidence.state, measured.state);
   assert.equal(wakingBrowser.evidence.digest, referenceDigest);
-  assert.equal(measured.state.tick, wakeTick);
+  assert.equal(measured.state.tick, wakeObservation.targetTick);
   assert.ok(measured.metrics.perTickTransitionsAvoided > 80_000);
-  assert.ok(measured.metrics.jumpCount < wakeTick / 10);
+  assert.ok(measured.metrics.jumpCount < wakeObservation.targetTick / 10);
 
-  console.log('AXM Global State proof 011 fully cold elapsed-time catch-up: PASS');
+  console.log('AXM Global State proof 011 fully cold elapsed logical time: PASS');
   console.log({
     coldParticipants: ['browser', 'relay', 'authority'],
-    sleepTick,
-    wakeTick,
-    coldLogicalTicks: wakeTick - sleepTick,
+    clockSourceId: timeAnchor.clockSourceId,
+    sleepObservedUnixMs,
+    wakeObservedUnixMs,
+    sleepLogicalTick: sleepObservation.targetTick,
+    wakeLogicalTick: wakeObservation.targetTick,
+    logicalTicksPassedWhileCold: wakeObservation.targetTick - sleepObservation.targetTick,
     browserRestoredRevision: wakingBrowser.evidence.restoredReceiptCount,
     authorityRestoredRevision: secondReady.checkpoint.revision,
     requestedMissingAfterRevision: secondRelay.syncRequests[0],
-    receivedAfterWake: wakingBrowser.evidence.receivedThisProcess,
+    receiptsTransferredAfterWake: wakingBrowser.evidence.receivedThisProcess,
     catchupJumps: measured.metrics.jumpCount,
     perTickTransitionsAvoided: measured.metrics.perTickTransitionsAvoided,
     finalRevision: wakingBrowser.evidence.normalizedRevision,
