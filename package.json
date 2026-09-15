@@ -1,9 +1,14 @@
 {
   "name": "axm-global-state",
-  "version": "0.0.1-experimental",
+  "version": "0.0.2-experimental",
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node tests/offline-catchup-selftest.mjs"
+    "test": "node tests/offline-catchup-selftest.mjs && node tests/portability-contract-selftest.mjs",
+    "test:browser": "node tests/browser-portability-selftest.mjs",
+    "test:all": "npm test && npm run test:browser"
+  },
+  "devDependencies": {
+    "playwright": "1.55.0"
   }
 }
