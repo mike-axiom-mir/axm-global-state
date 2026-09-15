@@ -5,7 +5,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { openFileReceiptHistory } from '../src/durable-receipt-history.mjs';
-import { normalizeAcceptedReceipts } from '../src/mutation-agreement.mjs';
+import {
+  createSingleSequencerAuthority,
+  normalizeAcceptedReceipts
+} from '../src/mutation-agreement.mjs';
 import { advanceCatchup, createState, digestState } from '../src/temporal-state-kernel.mjs';
 
 const childScript = fileURLToPath(new URL('./receipt-authority-service-child.mjs', import.meta.url));
@@ -43,13 +46,14 @@ const proposalA = Object.freeze({
   })
 });
 
-function startService() {
+function startService({ serviceHistoryPath = historyPath, extraEnv = {} } = {}) {
   const child = fork(childScript, [], {
     env: {
       ...process.env,
-      AXM_RECEIPT_HISTORY_FILE: historyPath,
+      AXM_RECEIPT_HISTORY_FILE: serviceHistoryPath,
       AXM_CHECKPOINT_REVISION: '0',
-      AXM_CHECKPOINT_HEAD: checkpointHead
+      AXM_CHECKPOINT_HEAD: checkpointHead,
+      ...extraEnv
     },
     stdio: ['ignore', 'pipe', 'pipe', 'ipc']
   });
@@ -210,15 +214,63 @@ try {
     /receipt-digest-mismatch:1/
   );
 
+  // Concurrency regression: construct the expected R1 head locally, then send
+  // R1 and a correctly rebased R2 request without awaiting R1. The child proof
+  // service deliberately delays first-proposal persistence. An async but
+  // unserialized sequencer lets R2 race into a history that does not yet contain
+  // R1; the explicit request queue must keep admission + persistence ordered.
+  const previewAuthority = createSingleSequencerAuthority({ checkpointRevision: 0, checkpointHead });
+  const previewReceiptA = previewAuthority.submit(proposalA).receipt;
+  const concurrentProposalB = Object.freeze({
+    id: 'proposal-concurrent-b',
+    actorId: 'participant-b',
+    basedOnRevision: 1,
+    basedOnHead: previewReceiptA.acceptedHead,
+    command: Object.freeze({
+      atTick: 90,
+      type: 'rate.set',
+      payload: Object.freeze({ ratePerTickMilli: 5 })
+    })
+  });
+  const concurrentHistoryPath = path.join(tempDir, 'concurrent-history.json');
+  const concurrentService = startService({
+    serviceHistoryPath: concurrentHistoryPath,
+    extraEnv: { AXM_TEST_FIRST_PROPOSAL_PERSIST_DELAY_MS: '75' }
+  });
+  await concurrentService.ready;
+  const concurrentARequest = concurrentService.request('proposal.submit', { proposal: proposalA });
+  const concurrentBRequest = concurrentService.request('proposal.submit', { proposal: concurrentProposalB });
+  const [concurrentA, concurrentB] = await Promise.all([concurrentARequest, concurrentBRequest]);
+  assert.equal(concurrentA.ok, true, concurrentA.error);
+  assert.equal(concurrentB.ok, true, concurrentB.error);
+  assert.equal(concurrentA.result.checkpoint.revision, 1);
+  assert.equal(concurrentB.result.checkpoint.revision, 2);
+  assert.deepEqual(concurrentA.result.receipt, previewReceiptA);
+  await concurrentService.killHard();
+
+  const concurrentRecovered = startService({ serviceHistoryPath: concurrentHistoryPath });
+  const concurrentReady = await concurrentRecovered.ready;
+  assert.equal(concurrentReady.checkpoint.revision, 2, 'latest acknowledged concurrent revision must survive hard restart');
+  assert.equal(concurrentReady.retainedReceipts, 2);
+  const concurrentReceipts = await concurrentRecovered.request('receipts.after', { revision: 0 });
+  assert.equal(concurrentReceipts.ok, true);
+  assert.deepEqual(
+    concurrentReceipts.result.receipts.map((receipt) => receipt.proposalId),
+    ['proposal-a', 'proposal-concurrent-b']
+  );
+  await concurrentRecovered.shutdown();
+
   console.log('AXM Global State proof 009 durable receipt authority restart: PASS');
   console.log({
-    authorityProcesses: 3,
-    hardRestarts: 2,
+    authorityProcesses: 5,
+    hardRestarts: 3,
     retainedReceipts: normalized.receipts.length,
     recoveredRevision: normalized.toRevision,
     recoveredHead: normalized.head,
     duplicateProposalAfterRestart: true,
     conflictAfterRestartRejected: true,
+    concurrentSubmitSerialized: true,
+    concurrentRecoveredRevision: concurrentReady.checkpoint.revision,
     finalStateDigest: digestState(finalState)
   });
 } finally {
