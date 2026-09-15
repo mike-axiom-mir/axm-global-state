@@ -1,0 +1,256 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>AXM Global State Browser Partial Replay Checkpoint Proof</title>
+<pre id="status" data-status="ready">ready</pre>
+<script type="module">
+  import { normalizeAcceptedReceipts } from "../src/mutation-agreement.mjs";
+  import { resumeFromReplayCheckpoint, verifyReplayCheckpoint } from "../src/replay-checkpoint.mjs";
+  import { advanceCatchup, createState, digestState } from "../src/temporal-state-kernel.mjs";
+
+  const STORAGE_KEY = "axm.global-state.proof-022.browser-partial-replay-checkpoint/v0";
+  const statusNode = document.querySelector("#status");
+
+  let config = null;
+  let socket = null;
+  let active = null;
+  let finalEvidence = null;
+  let restoredOldReceiptCount = 0;
+  let restoredReplayCheckpoint = false;
+  let replayCheckpointReceivedThisProcess = false;
+  let receiptsReceivedThisProcess = 0;
+  const syncRequests = [];
+
+  function clone(value) {
+    return structuredClone(value);
+  }
+
+  function updateStatus(status, body) {
+    statusNode.dataset.status = status;
+    statusNode.textContent = JSON.stringify(body ?? { status });
+  }
+
+  function readStorage() {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw === null) return null;
+    let parsed;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      throw new Error("partial-replay-client-storage-invalid-json");
+    }
+    if (!parsed || parsed.schema !== STORAGE_KEY) {
+      throw new Error("partial-replay-client-storage-invalid-schema");
+    }
+    return parsed;
+  }
+
+  function persistOldReceipts(receipts) {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      schema: STORAGE_KEY,
+      kind: "old-receipts",
+      receipts: clone(receipts)
+    }));
+  }
+
+  function persistReplayCheckpoint(checkpoint, suffixReceipts) {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      schema: STORAGE_KEY,
+      kind: "replay-checkpoint",
+      checkpoint: clone(checkpoint),
+      suffixReceipts: clone(suffixReceipts)
+    }));
+  }
+
+  function activateOld(receipts, { persist = false } = {}) {
+    const normalized = normalizeAcceptedReceipts(receipts, {
+      checkpointRevision: config.sourceCheckpointRevision,
+      checkpointHead: config.sourceCheckpointHead
+    });
+    active = {
+      kind: "old-history",
+      revision: normalized.toRevision,
+      head: normalized.head,
+      baseState: createState(config.baseState),
+      receipts: clone(normalized.receipts),
+      commands: clone(normalized.commands)
+    };
+    if (persist) persistOldReceipts(active.receipts);
+  }
+
+  function verifyTrustedCheckpoint(checkpoint) {
+    return verifyReplayCheckpoint(checkpoint, {
+      expectedCheckpointDigest: config.trustedReplayCheckpointDigest,
+      expectedMutationRevision: config.expectedReplayMutationRevision,
+      expectedMutationHead: config.expectedReplayMutationHead,
+      expectedRulesVersion: config.rules.version
+    });
+  }
+
+  function activateReplay(checkpoint, suffixReceipts, { persist = false } = {}) {
+    const verified = verifyTrustedCheckpoint(checkpoint);
+    const resumed = resumeFromReplayCheckpoint({
+      checkpoint,
+      expectedCheckpointDigest: config.trustedReplayCheckpointDigest,
+      acceptedReceipts: suffixReceipts,
+      targetTick: config.targetTick,
+      rules: config.rules
+    });
+    active = {
+      kind: "replay-checkpoint",
+      revision: resumed.normalizedSuffix.toRevision,
+      head: resumed.normalizedSuffix.head,
+      checkpointRevision: verified.mutationRevision,
+      checkpointHead: verified.mutationHead,
+      checkpointTick: verified.checkpointTick,
+      checkpointDigest: verified.checkpointDigest,
+      suffixReceipts: clone(resumed.normalizedSuffix.receipts),
+      state: clone(resumed.state),
+      digest: resumed.digest
+    };
+    if (persist) persistReplayCheckpoint(checkpoint, active.suffixReceipts);
+  }
+
+  function restore() {
+    const stored = readStorage();
+    if (stored === null) {
+      activateOld([], { persist: false });
+      return;
+    }
+    if (stored.kind === "old-receipts") {
+      if (!Array.isArray(stored.receipts)) throw new Error("partial-replay-client-receipts-required");
+      restoredOldReceiptCount = stored.receipts.length;
+      activateOld(stored.receipts, { persist: false });
+      return;
+    }
+    if (stored.kind === "replay-checkpoint") {
+      if (!Array.isArray(stored.suffixReceipts)) throw new Error("partial-replay-client-suffix-required");
+      restoredReplayCheckpoint = true;
+      activateReplay(stored.checkpoint, stored.suffixReceipts, { persist: false });
+      return;
+    }
+    throw new Error("partial-replay-client-storage-kind-unknown");
+  }
+
+  function currentStateAndDigest() {
+    if (active.kind === "replay-checkpoint") {
+      return { state: clone(active.state), digest: active.digest };
+    }
+    const state = advanceCatchup(clone(active.baseState), config.targetTick, {
+      commands: active.commands,
+      rules: config.rules
+    });
+    return { state, digest: digestState(state) };
+  }
+
+  function finishIfReady() {
+    if (finalEvidence || active.revision < config.expectedRevision) return;
+    try {
+      const { state, digest } = currentStateAndDigest();
+      finalEvidence = {
+        restoredOldReceiptCount,
+        restoredReplayCheckpoint,
+        replayCheckpointReceivedThisProcess,
+        receiptsReceivedThisProcess,
+        syncRequests: clone(syncRequests),
+        activeKind: active.kind,
+        normalizedRevision: active.revision,
+        normalizedHead: active.head,
+        checkpointRevision: active.checkpointRevision ?? null,
+        checkpointTick: active.checkpointTick ?? null,
+        checkpointDigest: active.checkpointDigest ?? null,
+        retainedSuffixReceipts: active.suffixReceipts?.length ?? 0,
+        state,
+        digest
+      };
+      updateStatus("pass", finalEvidence);
+    } catch (error) {
+      finalEvidence = { error: String(error?.stack || error) };
+      updateStatus("fail", finalEvidence);
+    }
+  }
+
+  function ingestOldReceipt(receipt) {
+    receiptsReceivedThisProcess += 1;
+    activateOld([...active.receipts, clone(receipt)], { persist: true });
+    updateStatus("receiving", {
+      revision: active.revision,
+      receiptsReceivedThisProcess
+    });
+    finishIfReady();
+  }
+
+  function ingestReplayCheckpoint(message) {
+    replayCheckpointReceivedThisProcess = true;
+    activateReplay(message.checkpoint, message.suffixReceipts, { persist: true });
+    updateStatus("adopted", {
+      checkpointRevision: active.checkpointRevision,
+      checkpointTick: active.checkpointTick,
+      revision: active.revision
+    });
+    finishIfReady();
+  }
+
+  function connect() {
+    socket = new WebSocket(config.websocketUrl);
+    socket.addEventListener("open", () => {
+      const request = { type: "sync.request", afterRevision: active.revision };
+      syncRequests.push(clone(request));
+      socket.send(JSON.stringify(request));
+      updateStatus("connected", request);
+    });
+    socket.addEventListener("message", (event) => {
+      try {
+        const message = JSON.parse(event.data);
+        if (message?.type === "receipt" && message.receipt) {
+          if (active.kind !== "old-history") throw new Error("partial-replay-client-unexpected-receipt-after-checkpoint");
+          ingestOldReceipt(message.receipt);
+          return;
+        }
+        if (message?.type === "replay.checkpoint" && message.checkpoint && Array.isArray(message.suffixReceipts)) {
+          ingestReplayCheckpoint(message);
+          return;
+        }
+        throw new Error("partial-replay-client-unexpected-message");
+      } catch (error) {
+        finalEvidence = { error: String(error?.stack || error) };
+        updateStatus("fail", finalEvidence);
+      }
+    });
+    socket.addEventListener("error", () => {
+      if (!finalEvidence) updateStatus("transport-error", { revision: active?.revision ?? null });
+    });
+  }
+
+  window.__AXM_PARTIAL_REPLAY_PROOF__ = {
+    storageKey: STORAGE_KEY,
+    configure(nextConfig) {
+      config = clone(nextConfig);
+      try {
+        restore();
+        updateStatus("restored", {
+          restoredOldReceiptCount,
+          restoredReplayCheckpoint,
+          activeKind: active.kind,
+          revision: active.revision
+        });
+        if (active.revision >= config.expectedRevision) {
+          finishIfReady();
+          return;
+        }
+        connect();
+      } catch (error) {
+        finalEvidence = { error: String(error?.stack || error) };
+        updateStatus("fail", finalEvidence);
+      }
+    },
+    evidence() {
+      return clone(finalEvidence);
+    },
+    storageSnapshot() {
+      return localStorage.getItem(STORAGE_KEY);
+    },
+    close() {
+      if (socket && socket.readyState < WebSocket.CLOSING) socket.close();
+    }
+  };
+</script>
