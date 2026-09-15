@@ -1,91 +1,123 @@
 # AXM Global State — Next Build
 
-Status: **PROPOSED FIRST PROOF**
+Status: **FIRST PROOF WAVE COMPLETE / SECOND-WAVE RESEARCH**
 
-Do not begin with networking, P2P consensus, a giant world, WebGPU or a database.
+The original first-wave stop condition has been reached for the bounded experimental kernel.
 
-The first useful proof should answer one question:
+Do not widen into a giant multiplayer/networking stack simply because the first proofs are green.
 
-> Can two different reconstruction methods start from the same trusted state and elapsed logical time and produce the exact same final state/evidence?
+See:
 
-## Proof 001 — offline catch-up equivalence
+- `docs/FIRST_WAVE_REVIEW_2026-09-15.md`
+- `docs/SHARED_STATE_SYNC_PATTERNS_2026-09-15.md`
+- `docs/STATE_SYNC_RESPONSIBILITY_MATRIX_V0.md`
 
-Build a tiny deterministic state containing:
+## What is already tested
 
-- logical tick/time index;
-- one producer/consumer resource;
-- one scheduled completion event;
-- one deterministic recurring event stream;
-- one accepted external command with a stable command ID;
-- one state digest.
+The repository can currently demonstrate, within its explicit JavaScript proof boundary:
 
-Implement two paths:
+1. deterministic state reconstruction after offline logical time;
+2. equivalence between fine reference stepping and eventful catch-up;
+3. restart/replay continuity and idempotent accepted commands;
+4. exact canonical reconstruction in Node.js and real Chromium;
+5. long-absence catch-up that skips empty per-tick work;
+6. explicit versioned consumer time modes (`closed-form`, `fixed-quantum`, `event-boundary`);
+7. fail-closed boundaries for overflow, backward time, missing history and incompatible temporal contracts.
 
-### A. Reference stepping
+This is still experimental infrastructure, not a production distributed system.
 
-Advance through every logical boundary in order. This path is intentionally slow/simple and acts as the reference oracle for small intervals.
+## First external consumer result
 
-### B. Temporal catch-up
+The first `axm-global-state-rts` aggregate-city investigation did not produce a fake easy integration. It exposed a real product contract question: one large city `advance(totalElapsed)` is not equivalent to repeated updates under the current nonlinear starvation/readiness/training behavior.
 
-Advance directly across elapsed time where arithmetic is exact, stepping only meaningful event boundaries.
+That RTS research stays product-owned and draft. Global State must not silently pick the game's canonical time quantum.
 
-## Required evidence
+## Second-wave question
 
-For a matrix of seeds, starting states, event positions and elapsed intervals:
+> What is the smallest shared mutation-agreement layer needed when state reconstruction itself can happen independently on participant devices?
 
-```text
-reference_final_state === catchup_final_state
-reference_digest === catchup_digest
-```
-
-Also prove:
-
-- replaying the same accepted command ID is idempotent;
-- conflicting reuse of one command ID fails closed;
-- time cannot silently move backward;
-- changing rule version changes provenance and cannot masquerade as the same replay;
-- shutdown/reload from serialized checkpoint + journal reproduces the same final digest.
-
-## Proof 002 — browser execution
-
-Once Proof 001 is green in a headless/runtime test, run the exact same fixture in a browser with no special browser-only physics.
-
-Required result:
+The architecture must keep these responsibilities separate:
 
 ```text
-Node/headless digest === browser digest
+transport
+mutation admission / identity
+ordering or merge semantics
+accepted durable history
+checkpointing
+logical-time reconstruction
+presentation
 ```
 
-If floating-point/runtime differences break this, treat that as evidence and tighten the deterministic numeric contract rather than hiding the mismatch.
+WebSocket, P2P, HTTP or a browser-local channel are transports. None of them automatically define state truth.
 
-## Proof 003 — long absence
+## Proof 005 candidate — provider-neutral mutation agreement seam
 
-Demonstrate a deliberately large gap, for example:
+Do **not** begin with real networking.
 
-- 1 minute;
-- 1 hour;
-- 1 day;
-- 30 days;
-- 1 year of logical time.
+Build a tiny deterministic proof with two simulated participants and a replaceable in-memory transport.
 
-The catch-up cost should scale primarily with meaningful crossed boundaries/events, not blindly with every empty tick.
+Required shape:
 
-## Proof 004 — first consumer adapter
+```text
+trusted checkpoint R0
+       │
+A proposes mutation ─┐
+                     ├─> authority mode -> accepted receipts R1, R2...
+B proposes mutation ─┘
+                              │
+                  ┌───────────┴───────────┐
+                  ▼                       ▼
+             runtime one              runtime two
+                  │                       │
+                  └── reconstruct same now ┘
+```
 
-Only after the generic proof is credible, adapt one bounded system from `axm-global-state-rts` as an external consumer.
+### Required evidence
 
-A good candidate is one aggregate city economy because it already has deterministic food/material production and low-detail state.
+- mutation proposals name the checkpoint/revision they were based on;
+- stable proposal/event IDs make duplicate delivery idempotent;
+- stale/conflicting proposals fail closed unless the selected authority mode explicitly defines reconciliation;
+- accepted receipts have deterministic sequence/revision + previous-head binding;
+- transport may reorder/duplicate delivery without changing accepted canonical reconstruction;
+- two independent runtimes given the same trusted checkpoint + accepted receipts produce identical state/digest;
+- transport implementation can be replaced without changing state semantics;
+- no participant may directly mutate canonical state through the transport layer.
 
-Do not move RTS code into this repo merely to make the demo pass. The general kernel should expose a small adapter/transition contract and the RTS should remain its own product experiment.
+### First authority mode
 
-## Stop condition for first wave
+Start with **`single-sequencer`**, because it is the smallest honest model for a non-commutative shared causal world.
 
-Stop expanding when the repo can truthfully demonstrate:
+This does **not** mean Global State becomes server-first. The sequencer should own only what cannot be reconstructed independently:
 
-1. deterministic state reconstruction after offline time;
-2. equivalence between reference stepping and eventful catch-up;
-3. restart/replay continuity;
-4. portable execution in at least two compatible runtimes;
-5. explicit truth boundaries around authority and networking.
+- identity/admission evidence;
+- accepted ordering;
+- compact durable mutation history/head.
 
-At that point, review the evidence before adding shared-world networking research to the implementation core.
+It must not continuously simulate the world merely because it sequences events.
+
+## Later research modes — do not mix into Proof 005
+
+### `local-owner`
+
+No remote authority. Useful for private/offline software and worlds.
+
+### `mergeable`
+
+CRDT-like mode for operations explicitly proven order-independent/mergeable. Do not apply this to causal game actions by default.
+
+### `multi-peer-agreement`
+
+Later P2P consensus/trust/identity research for non-commutative state. This is explicitly **not** the next implementation rung.
+
+## Stop condition for second-wave implementation
+
+Stop again once one provider-neutral agreement proof demonstrates:
+
+1. accepted mutation ordering independent of transport delivery order;
+2. deterministic reconstruction on two independent runtimes;
+3. stale/conflicting mutation rejection;
+4. duplicate delivery idempotence;
+5. authority responsibilities separated from simulation compute;
+6. explicit non-claims around identity security, production persistence, consensus and hostile-network resilience.
+
+Then review before attaching WebSocket, P2P or a hosted provider.
