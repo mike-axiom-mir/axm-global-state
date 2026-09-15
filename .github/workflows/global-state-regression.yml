@@ -52,3 +52,6 @@ jobs:
 
       - name: Fully-cold elapsed-time catch-up
         run: npm run test:cold-time
+
+      - name: Browser checkpoint adoption after epoch compaction
+        run: npm run test:checkpoint-adoption-browser

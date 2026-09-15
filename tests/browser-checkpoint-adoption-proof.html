@@ -1,0 +1,268 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>AXM Global State Browser Checkpoint Adoption Proof</title>
+<pre id="status" data-status="ready">ready</pre>
+<script type="module">
+  import { normalizeAcceptedReceipts } from "../src/mutation-agreement.mjs";
+  import { normalizeCheckpointAdoptionPackage } from "../src/checkpoint-adoption.mjs";
+  import { advanceCatchup, createState, digestState } from "../src/temporal-state-kernel.mjs";
+
+  const STORAGE_KEY = "axm.global-state.proof-020.browser-checkpoint-adoption/v0";
+  const statusNode = document.querySelector("#status");
+
+  let config = null;
+  let socket = null;
+  let finalEvidence = null;
+  let active = null;
+  let restoredReceiptCount = 0;
+  let restoredAdoptionPackage = false;
+  let adoptionReceivedThisProcess = false;
+  let receiptsReceivedThisProcess = 0;
+  const syncRequests = [];
+
+  function updateStatus(status, body) {
+    statusNode.dataset.status = status;
+    statusNode.textContent = JSON.stringify(body ?? { status });
+  }
+
+  function clone(value) {
+    return structuredClone(value);
+  }
+
+  function readStorage() {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw === null) return null;
+    let parsed;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      throw new Error("checkpoint-client-storage-invalid-json");
+    }
+    if (!parsed || parsed.schema !== STORAGE_KEY) {
+      throw new Error("checkpoint-client-storage-invalid-schema");
+    }
+    return parsed;
+  }
+
+  function persistGenesis(receipts) {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      schema: STORAGE_KEY,
+      kind: "genesis-receipts",
+      receipts: clone(receipts)
+    }));
+  }
+
+  function persistAdoption(packageValue, preAdoptionRevision, expectedPriorEpochId) {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      schema: STORAGE_KEY,
+      kind: "checkpoint-adoption",
+      expectedPriorEpochId,
+      preAdoptionRevision,
+      package: clone(packageValue)
+    }));
+  }
+
+  function activateGenesis(receipts, { persist = false } = {}) {
+    const normalized = normalizeAcceptedReceipts(receipts, {
+      checkpointRevision: config.genesisCheckpointRevision,
+      checkpointHead: config.genesisCheckpointHead
+    });
+    active = {
+      kind: "genesis",
+      epochId: config.genesisEpochId,
+      checkpointRevision: config.genesisCheckpointRevision,
+      checkpointHead: config.genesisCheckpointHead,
+      revision: normalized.toRevision,
+      head: normalized.head,
+      baseState: createState(config.baseState),
+      receipts: clone(normalized.receipts),
+      commands: clone(normalized.commands)
+    };
+    if (persist) persistGenesis(active.receipts);
+  }
+
+  function activateAdoption(packageValue, preAdoptionRevision, expectedPriorEpochId, { persist = false } = {}) {
+    const adopted = normalizeCheckpointAdoptionPackage(packageValue, {
+      expectedPriorEpochId,
+      clientRevision: preAdoptionRevision
+    });
+    active = {
+      kind: "adopted-epoch",
+      epochId: adopted.epoch.epochId,
+      checkpointRevision: adopted.fromRevision,
+      checkpointHead: adopted.epoch.checkpointHead,
+      checkpointTick: adopted.epoch.checkpointTick,
+      revision: adopted.toRevision,
+      head: adopted.head,
+      baseState: clone(adopted.compactedState),
+      receipts: clone(adopted.receipts),
+      commands: clone(adopted.commands),
+      adoptionPackage: clone(packageValue),
+      preAdoptionRevision,
+      expectedPriorEpochId
+    };
+    if (persist) persistAdoption(packageValue, preAdoptionRevision, expectedPriorEpochId);
+  }
+
+  function restore() {
+    const stored = readStorage();
+    if (stored === null) {
+      activateGenesis([], { persist: false });
+      return;
+    }
+    if (stored.kind === "genesis-receipts") {
+      if (!Array.isArray(stored.receipts)) throw new Error("checkpoint-client-storage-receipts-required");
+      restoredReceiptCount = stored.receipts.length;
+      activateGenesis(stored.receipts, { persist: false });
+      return;
+    }
+    if (stored.kind === "checkpoint-adoption") {
+      if (!Number.isSafeInteger(stored.preAdoptionRevision) || stored.preAdoptionRevision < 0) {
+        throw new Error("checkpoint-client-storage-pre-adoption-revision-invalid");
+      }
+      restoredAdoptionPackage = true;
+      activateAdoption(
+        stored.package,
+        stored.preAdoptionRevision,
+        stored.expectedPriorEpochId,
+        { persist: false }
+      );
+      return;
+    }
+    throw new Error("checkpoint-client-storage-kind-unknown");
+  }
+
+  function reconstruct() {
+    if (config.targetTick < active.baseState.tick) {
+      throw new Error("checkpoint-client-target-before-active-base");
+    }
+    return advanceCatchup(clone(active.baseState), config.targetTick, {
+      commands: active.commands,
+      rules: config.rules
+    });
+  }
+
+  function finishIfReady() {
+    if (finalEvidence || active.revision < config.expectedRevision) return;
+    try {
+      const state = reconstruct();
+      finalEvidence = {
+        restoredReceiptCount,
+        restoredAdoptionPackage,
+        adoptionReceivedThisProcess,
+        receiptsReceivedThisProcess,
+        syncRequests: clone(syncRequests),
+        activeKind: active.kind,
+        activeEpochId: active.epochId,
+        activeCheckpointRevision: active.checkpointRevision,
+        activeCheckpointTick: active.checkpointTick ?? 0,
+        normalizedRevision: active.revision,
+        normalizedHead: active.head,
+        retainedReceiptCount: active.receipts.length,
+        state,
+        digest: digestState(state)
+      };
+      updateStatus("pass", finalEvidence);
+    } catch (error) {
+      finalEvidence = { error: String(error?.stack || error) };
+      updateStatus("fail", finalEvidence);
+    }
+  }
+
+  function ingestGenesisReceipt(receipt) {
+    receiptsReceivedThisProcess += 1;
+    const next = [...active.receipts, clone(receipt)];
+    activateGenesis(next, { persist: true });
+    updateStatus("receiving", {
+      activeEpochId: active.epochId,
+      revision: active.revision,
+      receiptsReceivedThisProcess
+    });
+    finishIfReady();
+  }
+
+  function ingestAdoption(packageValue) {
+    const priorEpochId = active.epochId;
+    const preAdoptionRevision = active.revision;
+    adoptionReceivedThisProcess = true;
+    activateAdoption(packageValue, preAdoptionRevision, priorEpochId, { persist: true });
+    updateStatus("adopted", {
+      priorEpochId,
+      preAdoptionRevision,
+      activeEpochId: active.epochId,
+      activeCheckpointRevision: active.checkpointRevision,
+      activeCheckpointTick: active.checkpointTick,
+      revision: active.revision
+    });
+    finishIfReady();
+  }
+
+  function connect() {
+    socket = new WebSocket(config.websocketUrl);
+    socket.addEventListener("open", () => {
+      const request = {
+        type: "sync.request",
+        epochId: active.epochId,
+        afterRevision: active.revision
+      };
+      syncRequests.push(clone(request));
+      socket.send(JSON.stringify(request));
+      updateStatus("connected", request);
+    });
+    socket.addEventListener("message", (event) => {
+      try {
+        const message = JSON.parse(event.data);
+        if (message?.type === "receipt" && message.receipt) {
+          if (active.kind !== "genesis") throw new Error("checkpoint-client-unexpected-receipt-after-adoption");
+          ingestGenesisReceipt(message.receipt);
+          return;
+        }
+        if (message?.type === "checkpoint.adoption" && message.package) {
+          ingestAdoption(message.package);
+          return;
+        }
+        throw new Error("checkpoint-client-unexpected-websocket-message");
+      } catch (error) {
+        finalEvidence = { error: String(error?.stack || error) };
+        updateStatus("fail", finalEvidence);
+      }
+    });
+    socket.addEventListener("error", () => {
+      if (!finalEvidence) updateStatus("transport-error", { revision: active?.revision ?? null });
+    });
+  }
+
+  window.__AXM_CHECKPOINT_ADOPTION_PROOF__ = {
+    storageKey: STORAGE_KEY,
+    configure(nextConfig) {
+      config = clone(nextConfig);
+      try {
+        restore();
+        updateStatus("restored", {
+          restoredReceiptCount,
+          restoredAdoptionPackage,
+          activeKind: active.kind,
+          activeEpochId: active.epochId,
+          revision: active.revision
+        });
+        if (active.revision >= config.expectedRevision) {
+          finishIfReady();
+          return;
+        }
+        connect();
+      } catch (error) {
+        finalEvidence = { error: String(error?.stack || error) };
+        updateStatus("fail", finalEvidence);
+      }
+    },
+    evidence() {
+      return clone(finalEvidence);
+    },
+    storageSnapshot() {
+      return localStorage.getItem(STORAGE_KEY);
+    },
+    close() {
+      if (socket && socket.readyState < WebSocket.CLOSING) socket.close();
+    }
+  };
+</script>
