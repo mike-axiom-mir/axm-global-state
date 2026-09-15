@@ -1,0 +1,32 @@
+name: Global State consumer time contract v0
+
+on:
+  pull_request:
+    paths:
+      - "src/consumer-time-contract.mjs"
+      - "tests/consumer-time-contract-selftest.mjs"
+      - "docs/CONSUMER_TIME_CONTRACT_V0.md"
+      - "docs/ACTION_REPORT_CONSUMER_TIME_CONTRACT_V0.md"
+      - "package.json"
+      - ".github/workflows/consumer-time-contract-v0.yml"
+  push:
+    branches: [main]
+    paths:
+      - "src/consumer-time-contract.mjs"
+      - "tests/consumer-time-contract-selftest.mjs"
+      - "docs/CONSUMER_TIME_CONTRACT_V0.md"
+      - "docs/ACTION_REPORT_CONSUMER_TIME_CONTRACT_V0.md"
+      - "package.json"
+      - ".github/workflows/consumer-time-contract-v0.yml"
+
+jobs:
+  consumer-time-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Run deterministic proof suite
+        run: npm test
