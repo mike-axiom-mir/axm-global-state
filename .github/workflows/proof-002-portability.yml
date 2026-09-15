@@ -6,6 +6,7 @@ on:
       - "src/**"
       - "tests/**"
       - "docs/PORTABLE_STATE_CONTRACT_V0.md"
+      - "docs/ACTION_REPORT_PROOF_002.md"
       - "package.json"
       - ".github/workflows/proof-002-portability.yml"
   push:
@@ -13,6 +14,8 @@ on:
     paths:
       - "src/**"
       - "tests/**"
+      - "docs/PORTABLE_STATE_CONTRACT_V0.md"
+      - "docs/ACTION_REPORT_PROOF_002.md"
       - "package.json"
       - ".github/workflows/proof-002-portability.yml"
 
