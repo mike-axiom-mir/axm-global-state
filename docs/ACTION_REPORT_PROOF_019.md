@@ -1,13 +1,13 @@
 # Action Report — Proof 019: lagging-client checkpoint adoption
 
 Date: 2026-09-15
-Status: **CANDIDATE / CI PENDING / EXPERIMENTAL**
+Status: **PRE-FINAL TEST PASS / EXACT-HEAD CI PENDING / EXPERIMENTAL**
 
 ## Goal
 
 Prove that a client still on a retired mutation epoch can recover after checkpoint compaction without requiring the compacted historical receipt payloads.
 
-## Candidate model
+## Tested candidate model
 
 A checkpoint-adoption package contains:
 
@@ -18,7 +18,7 @@ A checkpoint-adoption package contains:
 
 The adoption layer verifies and normalizes those pieces only. It does **not** choose product time semantics or silently run product rules.
 
-## Candidate fixture
+## Fixture
 
 The old genesis epoch accepts revisions 1–3 and compacts at revision 3 / logical tick 3600. The compaction boundary includes a command exactly at tick 3600.
 
@@ -36,6 +36,39 @@ The proof requires:
 6. compacted historical proposal payloads are absent from the package;
 7. wrong prior epoch, adoption that would drop a newer client revision, compacted-state tamper, epoch-ID tamper, truncated suffix, wrong declared target head and unscoped new-epoch receipt all fail closed.
 
+## Pre-final CI evidence
+
+Combined branch head `8b7ea6707fb32fe689c5e3cf996ac73977b76e5a` passed the consolidated Global State regression suite:
+
+- workflow run: `35017119761`
+- job: `104543235376`
+- result: **SUCCESS**
+- runner: Ubuntu 24.04 / Node.js `v22.23.2`
+
+Observed adoption result:
+
+```text
+laggingClientRevision: 1
+laggingClientTick: 7200
+adoptedCheckpointRevision: 3
+adoptedCheckpointTick: 3600
+adoptedEpochId: fnv1a32:7ac841cf
+retainedSuffixReceipts: 1
+adoptedRevision: 4
+oldReceiptPayloadsTransferred: false
+staleBaseSuffixReplayRejected: true
+compactedStateTamperRejected: true
+epochIdentityTamperRejected: true
+truncatedSuffixRejected: true
+olderCheckpointOverNewerClientRejected: true
+physicalStatePreserved: true
+finalStateDigest: fnv1a32:ba4ed3fc
+```
+
+The same run also kept Proof 017 checkpoint epoch compaction, Proof 018 partial receipt payload compaction, durable authority, interval time, Chromium portability, browser transport/restart, WebSocket reconnect, fully-cold resume and fully-cold elapsed-time regressions green.
+
+After that run, the executable console label was corrected from the temporary duplicate `Proof 018` numbering to `Proof 019`. No proof semantics changed. This report update and that label correction still require one final exact-head consolidated pass before integration.
+
 ## Architectural boundary
 
 Checkpoint adoption is not checkpoint authority.
@@ -46,9 +79,9 @@ The layer also does not choose how a product advances from checkpoint tick to th
 
 ## Truth boundary
 
-Do not claim Proof 019 PASS until the consolidated exact-head regression suite succeeds.
+Do not promote Proof 019 to final PASS until the consolidated exact-head regression suite succeeds on the report-bearing head.
 
-Even after a pass, this will remain bounded experimental evidence. It will not prove:
+Even after a pass, this remains bounded experimental evidence. It does not prove:
 
 - remote checkpoint authentication or signatures;
 - malicious checkpoint-authority resistance;
