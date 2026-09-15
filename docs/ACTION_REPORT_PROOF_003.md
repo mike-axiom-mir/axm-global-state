@@ -1,7 +1,7 @@
 # Action Report — Proof 003: long-absence boundary scaling
 
 Date: 2026-09-15
-Status: **LOCAL TEST PASS / CI PENDING / EXPERIMENTAL**
+Status: **TEST PASS / EXPERIMENTAL**
 
 ## Goal
 
@@ -25,11 +25,24 @@ The measurement fixture uses one logical tick as one second only for readable te
 
 Metrics are evidence about execution shape. They are not written into canonical state and therefore do not change the state digest.
 
-## Local evidence
+## Exact candidate evidence
 
-The existing Proof 001 and portability-contract tests remain green locally. Proof 003 also passes locally and checks that measured execution produces exactly the same canonical state as ordinary `advanceCatchup(...)`.
+PR candidate head before this report-only evidence update: `7ca4a5d9b5b4485aa273b889426bf9c73ffc81cf`.
 
-Observed structural results:
+Proof 003 workflow:
+
+- run: `34960310552`
+- job: `104352055755`
+- result: **SUCCESS**
+- runner: Ubuntu 24.04 / Node.js `v22.23.2`
+
+The same code head also passed the existing real Chromium portability regression:
+
+- Proof 002 portability run: `34960310403`
+- job: `104352055405`
+- result: **SUCCESS**
+
+Observed structural results from the CI log:
 
 | Interval | Elapsed ticks | Catch-up jumps | Per-tick transitions avoided | Recurring events |
 | --- | ---: | ---: | ---: | ---: |
@@ -43,9 +56,11 @@ The one-year fixture therefore avoids about 98.33% of the individual per-tick tr
 
 The one-year canonical digest is `fnv1a32:bd25b8b4`.
 
+The measured path is required to produce exactly the same canonical state as ordinary `advanceCatchup(...)`; instrumentation is not canonical input.
+
 ## Important interpretation
 
-This is a **structural work-count proof**, not a wall-clock performance benchmark.
+This is a **structural work-count proof**, not a wall-clock performance benchmark and not a claim of 98.33% CPU savings.
 
 The current `nextBoundary(...)` implementation still scans the small completion/command arrays while finding the next boundary. A future world with very large event journals will need an indexed/scheduled boundary structure rather than assuming these small-list costs remain constant.
 
@@ -53,16 +68,19 @@ The proof establishes that the kernel does not inherently require one transition
 
 ## Truth boundary
 
-Not yet claimed by this report:
+This evidence does **not** prove:
 
-- CI evidence on the branch head;
-- browser parity after the instrumentation change;
 - production performance;
 - millions of scheduled commands/events;
 - aggregate closed-form skipping of recurring events themselves;
 - distributed/shared authority;
-- first RTS consumer integration.
+- first RTS consumer integration;
+- arbitrary product simulation determinism.
 
-## Next safe rung after CI
+Browser portability remains bounded to the existing Proof 002 JavaScript safe-integer/fixed-point contract.
 
-Once exact-head Node + Chromium regressions remain green, the general kernel is ready for the first bounded external consumer adapter. The intended candidate remains one aggregate economy/city state from `axm-global-state-rts`, without moving RTS product rules into this repository.
+## Next safe rung
+
+The general kernel is now ready to investigate its first bounded external consumer adapter. The intended candidate is one aggregate economy/city state from `axm-global-state-rts`, without moving RTS product rules into this repository.
+
+Initial inspection already identifies a useful compatibility question: the current RTS aggregate city uses finite floating-point values and nonlinear updates (starvation smoothing, repair, training floors). Proof 004 must test whether its existing `advance(deltaSeconds)` is chunk-size invariant before any Global State catch-up claim is made. If it is not invariant, that is a product-contract gap to expose rather than silently normalize.
