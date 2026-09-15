@@ -148,7 +148,12 @@ function validateCommands(state, commands) {
   }
 }
 
-function applyCommand(state, command) {
+function bumpMetric(metrics, key, amount = 1) {
+  if (!metrics) return;
+  metrics[key] = safeAdd(metrics[key], amount, `metric-overflow:${key}`);
+}
+
+function applyCommand(state, command, metrics = null) {
   const fingerprint = commandFingerprint(command);
   const prior = state.appliedCommands[command.id];
 
@@ -156,7 +161,7 @@ function applyCommand(state, command) {
     if (prior !== fingerprint) {
       throw new Error(`command-id-conflict:${command.id}`);
     }
-    return;
+    return false;
   }
 
   const payload = command.payload ?? {};
@@ -180,9 +185,13 @@ function applyCommand(state, command) {
   }
 
   state.appliedCommands[command.id] = fingerprint;
+  bumpMetric(metrics, "commandsApplied");
+  return true;
 }
 
-function applyBoundary(state, tick, commands, rules) {
+function applyBoundary(state, tick, commands, rules, metrics = null) {
+  let applications = 0;
+
   if (
     tick > 0 &&
     tick % rules.recurringEvery === 0 &&
@@ -191,12 +200,16 @@ function applyBoundary(state, tick, commands, rules) {
     state.recurringCount = safeAdd(state.recurringCount, 1, "recurring-count-overflow");
     state.stockMilli = safeAdd(state.stockMilli, rules.recurringRewardMilli, "stock-overflow");
     state.lastRecurringTickProcessed = tick;
+    bumpMetric(metrics, "recurringEventsApplied");
+    applications += 1;
   }
 
   for (const completion of state.completions) {
     if (!completion.applied && completion.atTick === tick) {
       state.stockMilli = safeAdd(state.stockMilli, completion.rewardMilli, "stock-overflow");
       completion.applied = true;
+      bumpMetric(metrics, "completionsApplied");
+      applications += 1;
     }
   }
 
@@ -205,8 +218,11 @@ function applyBoundary(state, tick, commands, rules) {
     .sort((a, b) => compareCanonicalText(a.id, b.id));
 
   for (const command of atTick) {
-    applyCommand(state, command);
+    if (applyCommand(state, command, metrics)) applications += 1;
   }
+
+  if (applications > 0) bumpMetric(metrics, "eventfulBoundaries");
+  return applications;
 }
 
 export function advanceReference(
@@ -266,10 +282,37 @@ function nextBoundary(state, targetTick, commands, rules) {
   return next;
 }
 
-export function advanceCatchup(
+function initializeMetrics(state, targetTick, metrics) {
+  if (!metrics) return;
+  Object.assign(metrics, {
+    startTick: state.tick,
+    targetTick,
+    elapsedTicks: targetTick - state.tick,
+    jumpCount: 0,
+    ticksTraversed: 0,
+    perTickTransitionsAvoided: 0,
+    largestJumpTicks: 0,
+    eventfulBoundaries: 0,
+    recurringEventsApplied: 0,
+    completionsApplied: 0,
+    commandsApplied: 0,
+    eventApplications: 0,
+  });
+}
+
+function recordJump(metrics, delta) {
+  if (!metrics) return;
+  bumpMetric(metrics, "jumpCount");
+  bumpMetric(metrics, "ticksTraversed", delta);
+  bumpMetric(metrics, "perTickTransitionsAvoided", Math.max(delta - 1, 0));
+  metrics.largestJumpTicks = Math.max(metrics.largestJumpTicks, delta);
+}
+
+function advanceCatchupCore(
   inputState,
   targetTick,
   { commands = [], rules = {} } = {},
+  metrics = null,
 ) {
   const state = clone(inputState);
   const actualRules = normalizeRules(rules);
@@ -281,19 +324,46 @@ export function advanceCatchup(
 
   validateTarget(state, targetTick);
   validateCommands(state, commands);
-  applyBoundary(state, state.tick, commands, actualRules);
+  initializeMetrics(state, targetTick, metrics);
+  applyBoundary(state, state.tick, commands, actualRules, metrics);
 
   while (state.tick < targetTick) {
     const boundary = nextBoundary(state, targetTick, commands, actualRules);
     const delta = boundary - state.tick;
+    recordJump(metrics, delta);
     const production = safeMultiply(state.ratePerTickMilli, delta, "stock-delta-overflow");
     state.stockMilli = safeAdd(state.stockMilli, production, "stock-overflow");
     state.tick = boundary;
-    applyBoundary(state, state.tick, commands, actualRules);
+    applyBoundary(state, state.tick, commands, actualRules, metrics);
   }
 
   validateState(state);
+  if (metrics) {
+    metrics.eventApplications = safeAdd(
+      safeAdd(metrics.recurringEventsApplied, metrics.completionsApplied, "metric-overflow:event-applications"),
+      metrics.commandsApplied,
+      "metric-overflow:event-applications",
+    );
+  }
   return state;
+}
+
+export function advanceCatchup(
+  inputState,
+  targetTick,
+  options = {},
+) {
+  return advanceCatchupCore(inputState, targetTick, options);
+}
+
+export function advanceCatchupMeasured(
+  inputState,
+  targetTick,
+  options = {},
+) {
+  const metrics = {};
+  const state = advanceCatchupCore(inputState, targetTick, options, metrics);
+  return { state, metrics };
 }
 
 export function makeReceipt(state) {
