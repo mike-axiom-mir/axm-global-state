@@ -1,10 +1,10 @@
 {
   "name": "axm-global-state",
-  "version": "0.0.14-experimental",
+  "version": "0.0.15-experimental",
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node tests/offline-catchup-selftest.mjs && node tests/portability-contract-selftest.mjs && node tests/long-absence-scaling-selftest.mjs && node tests/consumer-time-contract-selftest.mjs && node tests/mutation-agreement-selftest.mjs && node tests/logical-time-evidence-selftest.mjs && node tests/logical-time-admission-selftest.mjs && node tests/logical-time-corroboration-selftest.mjs",
+    "test": "node tests/offline-catchup-selftest.mjs && node tests/portability-contract-selftest.mjs && node tests/long-absence-scaling-selftest.mjs && node tests/consumer-time-contract-selftest.mjs && node tests/mutation-agreement-selftest.mjs && node tests/logical-time-evidence-selftest.mjs && node tests/logical-time-admission-selftest.mjs && node tests/logical-time-corroboration-selftest.mjs && node tests/logical-time-interval-selftest.mjs",
     "test:browser": "node tests/browser-portability-selftest.mjs",
     "test:transport": "node tests/browser-local-receipt-transport-selftest.mjs",
     "test:websocket": "node tests/websocket-reconnect-receipt-sync-selftest.mjs",
@@ -15,6 +15,7 @@
     "test:time-evidence": "node tests/logical-time-evidence-selftest.mjs",
     "test:time-admission": "node tests/logical-time-admission-selftest.mjs",
     "test:time-corroboration": "node tests/logical-time-corroboration-selftest.mjs",
+    "test:time-interval": "node tests/logical-time-interval-selftest.mjs",
     "test:all": "npm test && npm run test:browser && npm run test:transport && npm run test:websocket && npm run test:persistence && npm run test:durable-authority && npm run test:cold-resume && npm run test:cold-time"
   },
   "devDependencies": {
