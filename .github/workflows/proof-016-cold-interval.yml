@@ -1,0 +1,45 @@
+name: Global State proof 016 cold interval continuity
+
+on:
+  pull_request:
+    paths:
+      - "tests/cold-interval-source-continuity-selftest.mjs"
+      - "src/durable-receipt-history.mjs"
+      - "src/logical-time-interval-evidence.mjs"
+      - "src/logical-time-interval-corroboration.mjs"
+      - "src/temporal-state-kernel.mjs"
+      - "docs/ACTION_REPORT_PROOF_016.md"
+      - "package.json"
+      - ".github/workflows/proof-016-cold-interval.yml"
+  push:
+    branches: [main]
+    paths:
+      - "tests/cold-interval-source-continuity-selftest.mjs"
+      - "src/durable-receipt-history.mjs"
+      - "src/logical-time-interval-evidence.mjs"
+      - "src/logical-time-interval-corroboration.mjs"
+      - "src/temporal-state-kernel.mjs"
+      - "package.json"
+      - ".github/workflows/proof-016-cold-interval.yml"
+
+jobs:
+  cold-interval-continuity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install test dependencies
+        run: npm install --no-audit --no-fund
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Run deterministic proof suite
+        run: npm test
+      - name: Run durable-authority regression
+        run: npm run test:durable-authority
+      - name: Run real Chromium cold-time regression
+        run: npm run test:cold-time
+      - name: Run fully cold interval-source proof
+        run: npm run test:cold-interval
