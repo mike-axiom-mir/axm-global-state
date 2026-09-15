@@ -1,6 +1,6 @@
 {
   "name": "axm-global-state",
-  "version": "0.0.20-experimental",
+  "version": "0.0.21-experimental",
   "private": true,
   "type": "module",
   "scripts": {
@@ -21,7 +21,8 @@
     "test:partial-compaction": "node tests/partial-receipt-payload-compaction-selftest.mjs",
     "test:checkpoint-adoption": "node tests/checkpoint-adoption-selftest.mjs",
     "test:replay-checkpoint": "node tests/replay-checkpoint-compaction-floor-selftest.mjs",
-    "test:all": "npm test && npm run test:browser && npm run test:transport && npm run test:websocket && npm run test:persistence && npm run test:durable-authority && npm run test:cold-resume && npm run test:cold-time && npm run test:cold-interval"
+    "test:checkpoint-adoption-browser": "node tests/browser-checkpoint-adoption-selftest.mjs",
+    "test:all": "npm test && npm run test:browser && npm run test:transport && npm run test:websocket && npm run test:persistence && npm run test:durable-authority && npm run test:cold-resume && npm run test:cold-time && npm run test:cold-interval && npm run test:checkpoint-adoption-browser"
   },
   "devDependencies": {
     "playwright": "1.55.0",
