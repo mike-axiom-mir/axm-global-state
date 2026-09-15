@@ -1,0 +1,54 @@
+name: Global State regression suite
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: global-state-regression-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install Node dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Deterministic and time-contract proofs
+        run: npm test
+
+      - name: Durable accepted-history proof
+        run: npm run test:durable-authority
+
+      - name: Fully-cold interval-source proof
+        run: npm run test:cold-interval
+
+      - name: Install Chromium once
+        run: npx playwright install --with-deps chromium
+
+      - name: Node ↔ Chromium portability
+        run: npm run test:browser
+
+      - name: Browser-local receipt transport
+        run: npm run test:transport
+
+      - name: WebSocket reconnect continuity
+        run: npm run test:websocket
+
+      - name: Browser process restart continuity
+        run: npm run test:persistence
+
+      - name: Fully-cold end-to-end resume
+        run: npm run test:cold-resume
+
+      - name: Fully-cold elapsed-time catch-up
+        run: npm run test:cold-time
