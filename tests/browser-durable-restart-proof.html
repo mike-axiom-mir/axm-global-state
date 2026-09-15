@@ -1,0 +1,208 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>AXM Global State Durable Restart Proof</title>
+<pre id="status" data-status="ready">ready</pre>
+<script type="module">
+  import { normalizeAcceptedReceipts } from "../src/mutation-agreement.mjs";
+  import { advanceCatchup, createState, digestState } from "../src/temporal-state-kernel.mjs";
+
+  const DB_NAME = "axm-global-state-proof-008";
+  const STORE_NAME = "continuity";
+  const RECORD_KEY = "world";
+  const statusNode = document.querySelector("#status");
+
+  let socket = null;
+  let runtimeConfig = null;
+  let record = null;
+  let finalEvidence = null;
+  let sessionReceived = 0;
+  let connectionAttempts = 0;
+
+  function updateStatus(status, body = {}) {
+    statusNode.dataset.status = status;
+    statusNode.textContent = JSON.stringify(body);
+  }
+
+  function openDatabase() {
+    return new Promise((resolve, reject) => {
+      const request = indexedDB.open(DB_NAME, 1);
+      request.addEventListener("upgradeneeded", () => {
+        const db = request.result;
+        if (!db.objectStoreNames.contains(STORE_NAME)) db.createObjectStore(STORE_NAME);
+      });
+      request.addEventListener("success", () => resolve(request.result));
+      request.addEventListener("error", () => reject(request.error || new Error("indexeddb-open-failed")));
+    });
+  }
+
+  async function readRecord() {
+    const db = await openDatabase();
+    try {
+      return await new Promise((resolve, reject) => {
+        const transaction = db.transaction(STORE_NAME, "readonly");
+        const request = transaction.objectStore(STORE_NAME).get(RECORD_KEY);
+        request.addEventListener("success", () => resolve(request.result ?? null));
+        request.addEventListener("error", () => reject(request.error || new Error("indexeddb-read-failed")));
+      });
+    } finally {
+      db.close();
+    }
+  }
+
+  async function writeRecord(nextRecord) {
+    const db = await openDatabase();
+    try {
+      await new Promise((resolve, reject) => {
+        const transaction = db.transaction(STORE_NAME, "readwrite");
+        transaction.objectStore(STORE_NAME).put(structuredClone(nextRecord), RECORD_KEY);
+        transaction.addEventListener("complete", resolve);
+        transaction.addEventListener("abort", () => reject(transaction.error || new Error("indexeddb-write-aborted")));
+        transaction.addEventListener("error", () => reject(transaction.error || new Error("indexeddb-write-failed")));
+      });
+    } finally {
+      db.close();
+    }
+  }
+
+  function verifyRecord(candidate) {
+    if (!candidate || candidate.schema !== "axm.global-state.browser-continuity/v0") {
+      throw new Error("invalid-durable-record");
+    }
+    const normalized = normalizeAcceptedReceipts(candidate.acceptedReceipts, {
+      checkpointRevision: candidate.checkpointRevision,
+      checkpointHead: candidate.checkpointHead
+    });
+    if (normalized.toRevision !== candidate.verifiedRevision || normalized.head !== candidate.verifiedHead) {
+      throw new Error("durable-record-verification-mismatch");
+    }
+    return normalized;
+  }
+
+  async function persistReceipt(receipt) {
+    record.acceptedReceipts.push(structuredClone(receipt));
+    const normalized = normalizeAcceptedReceipts(record.acceptedReceipts, {
+      checkpointRevision: record.checkpointRevision,
+      checkpointHead: record.checkpointHead
+    });
+    record.verifiedRevision = normalized.toRevision;
+    record.verifiedHead = normalized.head;
+    await writeRecord(record);
+    return normalized;
+  }
+
+  async function maybeFinalize(normalized) {
+    if (finalEvidence || normalized.toRevision < runtimeConfig.expectedRevision) return;
+    const state = advanceCatchup(createState(record.baseState), record.targetTick, {
+      commands: normalized.commands,
+      rules: record.rules
+    });
+    finalEvidence = {
+      restoredFromStorage: Boolean(runtimeConfig.restoredFromStorage),
+      restoredInitialRevision: runtimeConfig.restoredInitialRevision,
+      connectionAttempts,
+      sessionReceived,
+      verifiedRevision: normalized.toRevision,
+      verifiedHead: normalized.head,
+      acceptedReceiptCount: normalized.receipts.length,
+      proposalIds: normalized.receipts.map((item) => item.proposalId),
+      state,
+      digest: digestState(state)
+    };
+    updateStatus("pass", finalEvidence);
+  }
+
+  function connect() {
+    connectionAttempts += 1;
+    socket = new WebSocket(runtimeConfig.websocketUrl);
+
+    socket.addEventListener("open", () => {
+      socket.send(JSON.stringify({
+        type: "sync.request",
+        afterRevision: record.verifiedRevision,
+        afterHead: record.verifiedHead
+      }));
+      updateStatus("connected", {
+        afterRevision: record.verifiedRevision,
+        connectionAttempts,
+        restoredFromStorage: Boolean(runtimeConfig.restoredFromStorage)
+      });
+    });
+
+    socket.addEventListener("message", async (event) => {
+      try {
+        const message = JSON.parse(event.data);
+        if (message?.type !== "receipt" || !message.receipt) throw new Error("unexpected-websocket-message");
+        sessionReceived += 1;
+        const normalized = await persistReceipt(message.receipt);
+        if (runtimeConfig.checkpointAtRevision === normalized.toRevision) {
+          updateStatus("checkpointed", {
+            verifiedRevision: record.verifiedRevision,
+            verifiedHead: record.verifiedHead,
+            acceptedReceiptCount: record.acceptedReceipts.length
+          });
+          return;
+        }
+        await maybeFinalize(normalized);
+      } catch (error) {
+        finalEvidence = { error: String(error?.stack || error) };
+        updateStatus("fail", finalEvidence);
+      }
+    });
+
+    socket.addEventListener("error", () => {
+      if (!finalEvidence) updateStatus("socket-error", { connectionAttempts });
+    });
+  }
+
+  window.__AXM_DURABLE_PROOF__ = {
+    async initialize(config) {
+      runtimeConfig = structuredClone(config);
+      record = {
+        schema: "axm.global-state.browser-continuity/v0",
+        checkpointRevision: runtimeConfig.checkpointRevision,
+        checkpointHead: runtimeConfig.checkpointHead,
+        verifiedRevision: runtimeConfig.checkpointRevision,
+        verifiedHead: runtimeConfig.checkpointHead,
+        acceptedReceipts: [],
+        baseState: structuredClone(runtimeConfig.baseState),
+        rules: structuredClone(runtimeConfig.rules),
+        targetTick: runtimeConfig.targetTick
+      };
+      await writeRecord(record);
+      runtimeConfig.restoredFromStorage = false;
+      runtimeConfig.restoredInitialRevision = record.verifiedRevision;
+      updateStatus("initialized", { verifiedRevision: record.verifiedRevision });
+      connect();
+    },
+
+    async resume(config) {
+      runtimeConfig = structuredClone(config);
+      record = await readRecord();
+      const normalized = verifyRecord(record);
+      runtimeConfig.restoredFromStorage = true;
+      runtimeConfig.restoredInitialRevision = normalized.toRevision;
+      updateStatus("restored", {
+        verifiedRevision: record.verifiedRevision,
+        verifiedHead: record.verifiedHead,
+        acceptedReceiptCount: record.acceptedReceipts.length
+      });
+      if (normalized.toRevision >= runtimeConfig.expectedRevision) {
+        await maybeFinalize(normalized);
+        return;
+      }
+      connect();
+    },
+
+    async durableRecord() {
+      return structuredClone(await readRecord());
+    },
+
+    evidence() {
+      return structuredClone(finalEvidence);
+    },
+
+    close() {
+      if (socket && socket.readyState < WebSocket.CLOSING) socket.close();
+    }
+  };
+</script>
