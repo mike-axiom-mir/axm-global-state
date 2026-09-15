@@ -1,7 +1,7 @@
 # Action Report — Proof 017: checkpoint epoch compaction
 
 Date: 2026-09-15
-Status: **CANDIDATE / CI PENDING / EXPERIMENTAL**
+Status: **TEST PASS / EXPERIMENTAL**
 
 ## Goal
 
@@ -11,7 +11,7 @@ Proof 009 established that restart-safe idempotence needs retained proposal iden
 
 This proof tests a full checkpoint **epoch boundary** instead.
 
-## Candidate model
+## Tested model
 
 At a trusted full checkpoint:
 
@@ -25,7 +25,7 @@ At a trusted full checkpoint:
 
 The existing single-sequencer and Temporal State Kernel remain unchanged. `src/checkpoint-epoch.mjs` is a boundary layer around them.
 
-## Candidate adversarial fixture
+## Adversarial fixture
 
 The pre-checkpoint history accepts three mutations:
 
@@ -37,14 +37,56 @@ The checkpoint-tick case matters because, after replay metadata is cleared, a le
 
 After checkpoint revision 3:
 
-- the compacted state must preserve all physical/product fields while clearing three retired applied-command identities;
-- replaying an old receipt at/before the checkpoint must produce no post-checkpoint command;
-- an otherwise-valid revision-4 receipt that is not current-epoch-qualified must fail closed;
-- a proposal naming the retired `genesis` epoch must fail closed;
-- local ID `proposal-a` may be explicitly reused in the new epoch because its full identity is different;
-- exact duplicate/conflicting reuse inside the new epoch must retain the existing idempotence/conflict behavior;
-- compacted checkpoint + new-epoch history advanced to tick 7200 must match the physical state from uncompacted genesis + complete history;
-- the compacted future should retain only the new epoch's applied-command identity instead of all four historical IDs.
+- the compacted state preserves all physical/product fields while clearing three retired applied-command identities;
+- replaying an old receipt at/before the checkpoint produces no post-checkpoint command;
+- an otherwise-valid revision-4 receipt that is not current-epoch-qualified fails closed;
+- a proposal naming the retired `genesis` epoch fails closed;
+- local ID `proposal-a` can be explicitly reused in the new epoch because its full identity is different;
+- exact duplicate/conflicting reuse inside the new epoch retains the existing idempotence/conflict behavior;
+- compacted checkpoint + new-epoch history advanced to tick 7200 matches the physical state from uncompacted genesis + complete history;
+- the compacted future retains only the new epoch's applied-command identity instead of all four historical IDs.
+
+## CI evidence
+
+Candidate head before this report-only evidence update: `b9d6ce9f0bf2f2cb175184ed638d25d7fb936edf`.
+
+Consolidated Global State regression suite:
+
+- run: `35015417259`
+- job: `104537499703`
+- result: **SUCCESS**
+- runner: Ubuntu 24.04 / Node.js `v22.23.2`
+
+Observed Proof 017 result:
+
+```text
+AXM Global State proof 017 checkpoint epoch compaction: PASS
+compactedThroughRevision: 3
+checkpointTick: 3600
+retiredCommandIds: 3
+epochId: fnv1a32:7ac841cf
+retainedPostCheckpointReceipts: 1
+compactedAppliedCommandIds: 1
+uncompactedAppliedCommandIds: 4
+oldEpochRejected: true
+unscopedPostCheckpointReceiptRejected: true
+localIdReuseAcrossEpochsExplicit: true
+physicalStatePreserved: true
+```
+
+The same exact candidate head also passed the retained mutation, time-evidence/admission/corroboration/interval, durable-authority, cold-interval, real Chromium portability, browser-local transport, WebSocket reconnect, browser process restart, fully-cold resume, and fully-cold elapsed-time proofs in the one consolidated gate.
+
+## What this proves
+
+Inside the bounded tested JavaScript proof:
+
+- a full trusted checkpoint at the current accepted head can retire the old receipt replay window and the old Temporal State `appliedCommands` identities together;
+- the physical/product state survives that replay-metadata compaction;
+- the post-checkpoint history can start from the existing accepted mutation revision/head without replaying old effects;
+- a historical command at the exact checkpoint tick is not re-exposed after compaction;
+- wrong/unscoped epoch input fails before it can become a Temporal State command;
+- local proposal IDs can be reused only through an explicit new epoch-qualified identity;
+- duplicate and conflicting reuse inside the active epoch preserve the existing sequencer behavior.
 
 ## Identity contract
 
@@ -64,9 +106,7 @@ An ID reused in another epoch is a different proposal identity. This is not a hi
 
 ## Truth boundary
 
-Do not claim Proof 017 PASS until the consolidated exact-head regression suite succeeds.
-
-Even after a pass, this proves only a bounded **full checkpoint at the current accepted head** seam. It does not prove:
+This proves only a bounded **full checkpoint at the current accepted head** seam. It does not prove:
 
 - arbitrary prefix/partial compaction;
 - durable/atomic state-checkpoint + receipt-store rotation;
@@ -81,6 +121,6 @@ Even after a pass, this proves only a bounded **full checkpoint at the current a
 
 The checkpoint producer remains responsible for proving that its state really contains all accepted effects through the named revision/head before retiring the old epoch.
 
-## Next safe rung if green
+## Next safe rung
 
 Persist a **checkpoint package** containing the compacted state + epoch identity + accepted mutation head, then atomically rotate the durable receipt history to that checkpoint. Crash tests should cover before/after each persistence boundary so a restart can recover either the old complete epoch or the new complete epoch, never a mixed half-transition.
