@@ -1,6 +1,6 @@
 {
   "name": "axm-global-state",
-  "version": "0.0.15-experimental",
+  "version": "0.0.16-experimental",
   "private": true,
   "type": "module",
   "scripts": {
@@ -16,7 +16,8 @@
     "test:time-admission": "node tests/logical-time-admission-selftest.mjs",
     "test:time-corroboration": "node tests/logical-time-corroboration-selftest.mjs",
     "test:time-interval": "node tests/logical-time-interval-selftest.mjs",
-    "test:all": "npm test && npm run test:browser && npm run test:transport && npm run test:websocket && npm run test:persistence && npm run test:durable-authority && npm run test:cold-resume && npm run test:cold-time"
+    "test:cold-interval": "node tests/cold-interval-source-continuity-selftest.mjs",
+    "test:all": "npm test && npm run test:browser && npm run test:transport && npm run test:websocket && npm run test:persistence && npm run test:durable-authority && npm run test:cold-resume && npm run test:cold-time && npm run test:cold-interval"
   },
   "devDependencies": {
     "playwright": "1.55.0",
