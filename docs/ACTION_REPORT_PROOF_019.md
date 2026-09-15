@@ -1,13 +1,13 @@
 # Action Report — Proof 019: lagging-client checkpoint adoption
 
 Date: 2026-09-15
-Status: **PRE-FINAL TEST PASS / EXACT-HEAD CI PENDING / EXPERIMENTAL**
+Status: **TEST PASS / EXPERIMENTAL**
 
 ## Goal
 
 Prove that a client still on a retired mutation epoch can recover after checkpoint compaction without requiring the compacted historical receipt payloads.
 
-## Tested candidate model
+## Tested model
 
 A checkpoint-adoption package contains:
 
@@ -36,14 +36,15 @@ The proof requires:
 6. compacted historical proposal payloads are absent from the package;
 7. wrong prior epoch, adoption that would drop a newer client revision, compacted-state tamper, epoch-ID tamper, truncated suffix, wrong declared target head and unscoped new-epoch receipt all fail closed.
 
-## Pre-final CI evidence
+## Exact-head CI evidence
 
-Combined branch head `8b7ea6707fb32fe689c5e3cf996ac73977b76e5a` passed the consolidated Global State regression suite:
+Corrected/report-predecessor head `f9b3f0e50394857964f6f989f0891429d8503d4f` passed the consolidated Global State regression suite:
 
-- workflow run: `35017119761`
-- job: `104543235376`
+- workflow run: `35017327189`
+- job: `104544044182`
 - result: **SUCCESS**
 - runner: Ubuntu 24.04 / Node.js `v22.23.2`
+- executable proof label: `AXM Global State proof 019 lagging client checkpoint adoption: PASS`
 
 Observed adoption result:
 
@@ -65,23 +66,21 @@ physicalStatePreserved: true
 finalStateDigest: fnv1a32:ba4ed3fc
 ```
 
-The same run also kept Proof 017 checkpoint epoch compaction, Proof 018 partial receipt payload compaction, durable authority, interval time, Chromium portability, browser transport/restart, WebSocket reconnect, fully-cold resume and fully-cold elapsed-time regressions green.
+The same exact-head run kept Proof 017 checkpoint epoch compaction, Proof 018 partial receipt payload compaction, durable authority, interval time, Chromium portability, browser transport/restart, WebSocket reconnect, fully-cold resume and fully-cold elapsed-time regressions green.
 
-After that run, the executable console label was corrected from the temporary duplicate `Proof 018` numbering to `Proof 019`. No proof semantics changed. This report update and that label correction still require one final exact-head consolidated pass before integration.
+This report-only evidence commit still requires one final consolidated run before integration so the merged head itself remains evidence-clean.
 
 ## Architectural boundary
 
 Checkpoint adoption is not checkpoint authority.
 
-This proof can verify internal consistency of a supplied checkpoint package and continuity from a configured prior epoch. It does not decide **who is authorized to declare a checkpoint trusted**. Authentication/signatures/consensus/checkpoint-source policy remain separate.
+This proof verifies internal consistency of a supplied checkpoint package and continuity from a configured prior epoch. It does not decide **who is authorized to declare a checkpoint trusted**. Authentication/signatures/consensus/checkpoint-source policy remain separate.
 
 The layer also does not choose how a product advances from checkpoint tick to the client's admitted logical time. Existing consumer time contracts remain responsible for that product-specific decision.
 
 ## Truth boundary
 
-Do not promote Proof 019 to final PASS until the consolidated exact-head regression suite succeeds on the report-bearing head.
-
-Even after a pass, this remains bounded experimental evidence. It does not prove:
+This remains bounded experimental evidence. It does not prove:
 
 - remote checkpoint authentication or signatures;
 - malicious checkpoint-authority resistance;
@@ -93,6 +92,6 @@ Even after a pass, this remains bounded experimental evidence. It does not prove
 - automatic checkpoint retention policy;
 - universal product time semantics.
 
-## Next safe rung if green
+## Next safe rung
 
 Use the same package in a real Chromium restart/adoption proof: a persistent browser remains on the retired epoch, the authority compacts while it is absent, then the browser returns, detects that receipt-only catch-up is impossible, adopts the verified checkpoint package, requests only the retained epoch suffix, and reconstructs its current admitted logical time.
