@@ -67,6 +67,10 @@ function proposalFingerprint(proposal) {
   });
 }
 
+export function fingerprintMutationProposal(inputProposal) {
+  return proposalFingerprint(normalizeProposal(inputProposal));
+}
+
 function receiptCore({ sequence, proposal, previousHead }) {
   return {
     schema: MUTATION_AGREEMENT_SCHEMA,
@@ -84,6 +88,26 @@ function buildReceipt({ sequence, proposal, previousHead }) {
   const core = receiptCore({ sequence, proposal, previousHead });
   const acceptedHead = digestValue(core);
   return Object.freeze({ ...core, acceptedHead });
+}
+
+export function reconstructAcceptedReceiptFromProposal({
+  proposal: inputProposal,
+  sequence,
+  acceptedHead
+} = {}) {
+  const proposal = normalizeProposal(inputProposal);
+  const normalizedSequence = requireRevision(sequence, 'invalid-reconstructed-receipt-sequence');
+  if (normalizedSequence === 0) throw new Error('invalid-reconstructed-receipt-sequence');
+  const expectedAcceptedHead = requireText(acceptedHead, 'reconstructed-receipt-head-required');
+  const receipt = buildReceipt({
+    sequence: normalizedSequence,
+    proposal,
+    previousHead: proposal.basedOnHead
+  });
+  if (receipt.acceptedHead !== expectedAcceptedHead) {
+    throw new Error(`reconstructed-receipt-head-mismatch:${proposal.id}`);
+  }
+  return receipt;
 }
 
 function receiptFingerprint(receipt) {
