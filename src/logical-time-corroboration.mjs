@@ -17,6 +17,12 @@ function requireTrustScope(value) {
   return value;
 }
 
+function compareCanonicalText(a, b) {
+  if (a < b) return -1;
+  if (a > b) return 1;
+  return 0;
+}
+
 function canonicalSourceIds(sourceIds) {
   if (!Array.isArray(sourceIds) || sourceIds.length < 2) {
     throw new Error('time-corroboration-source-ids-required');
@@ -24,7 +30,7 @@ function canonicalSourceIds(sourceIds) {
   const normalized = sourceIds.map((sourceId) => requireText(sourceId, 'invalid-time-corroboration-source-id'));
   const unique = [...new Set(normalized)];
   if (unique.length !== normalized.length) throw new Error('duplicate-time-corroboration-source-id');
-  return Object.freeze([...unique].sort());
+  return Object.freeze([...unique].sort(compareCanonicalText));
 }
 
 export function normalizeLogicalTimeCorroborationPolicy(input = {}) {
@@ -76,11 +82,11 @@ function evidenceSummary(evidence) {
 }
 
 function sourceSetKey(group) {
-  return group.map((item) => item.sourceId).sort().join('|');
+  return group.map((item) => item.sourceId).sort(compareCanonicalText).join('|');
 }
 
 function findAgreementGroups(evidence, policy) {
-  const sorted = [...evidence].sort((a, b) => a.tick - b.tick || a.sourceId.localeCompare(b.sourceId));
+  const sorted = [...evidence].sort((a, b) => a.tick - b.tick || compareCanonicalText(a.sourceId, b.sourceId));
   const candidates = [];
 
   for (let left = 0; left < sorted.length; left += 1) {
@@ -174,7 +180,7 @@ export function evaluateLogicalTimeCorroboration(
       previousTick,
       admittedTick: previousTick,
       candidateGroups: Object.freeze(groups.map((candidate) => Object.freeze({
-        sourceIds: Object.freeze(candidate.group.map((item) => item.sourceId).sort()),
+        sourceIds: Object.freeze(candidate.group.map((item) => item.sourceId).sort(compareCanonicalText)),
         ticks: Object.freeze(candidate.group.map((item) => item.tick).sort((a, b) => a - b)),
         spreadTicks: candidate.spreadTicks
       }))),
