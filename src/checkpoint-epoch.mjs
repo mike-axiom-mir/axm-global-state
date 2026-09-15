@@ -45,6 +45,25 @@ export function qualifyEpochProposalId(epochId, localProposalId) {
   return `${epochPrefix(epochId)}${requireText(localProposalId, 'local-proposal-id-required')}`;
 }
 
+function buildEpochCore({
+  priorEpochId,
+  checkpointRevision,
+  checkpointHead,
+  checkpointTick,
+  sourceStateDigest,
+  compactedStateDigest
+}) {
+  return {
+    schema: CHECKPOINT_EPOCH_SCHEMA,
+    priorEpochId,
+    checkpointRevision,
+    checkpointHead,
+    checkpointTick,
+    sourceStateDigest,
+    compactedStateDigest
+  };
+}
+
 export function createCheckpointEpoch({
   checkpointRevision,
   checkpointHead,
@@ -67,15 +86,14 @@ export function createCheckpointEpoch({
   compactedState.appliedCommands = {};
   const compactedStateDigest = digestState(compactedState);
 
-  const epochCore = {
-    schema: CHECKPOINT_EPOCH_SCHEMA,
+  const epochCore = buildEpochCore({
     priorEpochId,
     checkpointRevision,
     checkpointHead,
     checkpointTick: sourceState.tick,
     sourceStateDigest,
     compactedStateDigest
-  };
+  });
   const epochId = digestValue(epochCore);
 
   return Object.freeze({
@@ -83,6 +101,52 @@ export function createCheckpointEpoch({
     epochId,
     retiredCommandCount,
     compactedState
+  });
+}
+
+export function normalizeCheckpointEpoch(inputEpoch) {
+  if (!inputEpoch || typeof inputEpoch !== 'object') throw new Error('checkpoint-epoch-required');
+  if (inputEpoch.schema !== CHECKPOINT_EPOCH_SCHEMA) throw new Error('checkpoint-epoch-schema-mismatch');
+
+  const priorEpochId = requireText(inputEpoch.priorEpochId, 'prior-checkpoint-epoch-id-required');
+  const checkpointRevision = requireRevision(inputEpoch.checkpointRevision, 'invalid-checkpoint-epoch-revision');
+  const checkpointHead = requireText(inputEpoch.checkpointHead, 'checkpoint-epoch-head-required');
+  const checkpointTick = requireRevision(inputEpoch.checkpointTick, 'checkpoint-epoch-state-tick-invalid');
+  const sourceStateDigest = requireText(inputEpoch.sourceStateDigest, 'checkpoint-epoch-source-state-digest-required');
+  const compactedStateDigest = requireText(inputEpoch.compactedStateDigest, 'checkpoint-epoch-compacted-state-digest-required');
+  const epochId = requireText(inputEpoch.epochId, 'checkpoint-epoch-id-required');
+  const retiredCommandCount = requireRevision(inputEpoch.retiredCommandCount, 'invalid-checkpoint-epoch-retired-command-count');
+
+  if (!inputEpoch.compactedState || typeof inputEpoch.compactedState !== 'object') {
+    throw new Error('checkpoint-epoch-compacted-state-required');
+  }
+  const compactedState = clone(inputEpoch.compactedState);
+  if (compactedState.tick !== checkpointTick) throw new Error('checkpoint-epoch-compacted-state-tick-mismatch');
+  if (!compactedState.appliedCommands || typeof compactedState.appliedCommands !== 'object' || Array.isArray(compactedState.appliedCommands)) {
+    throw new Error('checkpoint-epoch-applied-commands-required');
+  }
+  if (Object.keys(compactedState.appliedCommands).length !== 0) {
+    throw new Error('checkpoint-epoch-compacted-state-retains-command-ids');
+  }
+  if (digestState(compactedState) !== compactedStateDigest) {
+    throw new Error('checkpoint-epoch-compacted-state-digest-mismatch');
+  }
+
+  const epochCore = buildEpochCore({
+    priorEpochId,
+    checkpointRevision,
+    checkpointHead,
+    checkpointTick,
+    sourceStateDigest,
+    compactedStateDigest
+  });
+  if (digestValue(epochCore) !== epochId) throw new Error('checkpoint-epoch-id-mismatch');
+
+  return Object.freeze({
+    ...epochCore,
+    epochId,
+    retiredCommandCount,
+    compactedState: Object.freeze(compactedState)
   });
 }
 
