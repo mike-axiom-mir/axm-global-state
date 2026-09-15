@@ -1,13 +1,13 @@
 # Action Report — Proof 005: provider-neutral mutation agreement
 
 Date: 2026-09-15
-Status: **CANDIDATE / CI PENDING / EXPERIMENTAL**
+Status: **TEST PASS / EXPERIMENTAL**
 
 ## Goal
 
 Prove that shared mutation ordering can remain a small authority layer while deterministic world/software reconstruction remains independent runtime work.
 
-## Candidate implementation
+## Implemented
 
 `src/mutation-agreement.mjs` adds one bounded `single-sequencer` proof authority.
 
@@ -28,9 +28,9 @@ The sequencer:
 - verify previous-head/based-on-head continuity;
 - recompute each deterministic receipt head;
 - reject tampering, gaps or conflicting sequence/proposal reuse;
-- return the accepted command sequence for reconstruction.
+- convert accepted proposal IDs into the stable replay command IDs required by the Temporal State Kernel.
 
-## Candidate proof fixture
+## Proof fixture
 
 Two simulated participants propose against the same initial checkpoint.
 
@@ -48,11 +48,60 @@ The fixture also rejects:
 - tampered accepted command with unchanged receipt head;
 - conflicting reuse of one accepted sequence.
 
+## First failed candidate — preserved repair evidence
+
+The first CI candidate exposed an interface gap rather than being silently rewritten away.
+
+Workflow run `34961897854`, job `104357184790`: **FAIL**.
+
+Cause:
+
+- accepted receipts contained stable `proposalId` values;
+- `normalizeAcceptedReceipts(...)` returned the embedded product command without converting that accepted proposal ID into the Temporal State Kernel's required stable command `id`;
+- reconstruction therefore failed closed with `invalid-command-id`.
+
+Repair:
+
+- normalized replay commands now use `id = receipt.proposalId`;
+- the kernel's existing command-id/idempotence requirement was preserved rather than weakened.
+
+Repair commit: `0864e98ea5e15bb4ee9cc9a8065f528b253a8206`.
+
+## Passing evidence after repair
+
+Proof 005 run `34961982094`, job `104357462159`: **SUCCESS**.
+
+Observed proof evidence:
+
+```text
+AXM Global State proof 005 mutation agreement: PASS
+checkpointHead: state:fnv1a32:f8df04a3
+acceptedRevision: 2
+acceptedHead: fnv1a32:e4b47257
+finalStateDigest: fnv1a32:bab65c1b
+acceptedProposalIds: proposal-a, proposal-b
+```
+
+The same repaired head also passed:
+
+- consumer-time-contract regression run `34961982329`;
+- Proof 003 long-absence regression run `34961982314`;
+- real Node/Chromium portability run `34961982351`, job `104357462767`.
+
+## What this proves
+
+Within this bounded proof:
+
+- mutation admission/order can be separated from world simulation;
+- the sequencer does not need to advance world time or hold live product state;
+- stale concurrent causal proposals fail closed;
+- accepted proposal delivery can be reordered/duplicated by transport and still normalize to one verified sequence;
+- independent runtimes reconstruct identical canonical state from the same trusted checkpoint + accepted receipts;
+- the stable accepted proposal identity can serve as the downstream replay command identity.
+
 ## Truth boundary
 
-Do not claim Proof 005 PASS until exact-head CI succeeds.
-
-Even after a pass this will prove only a provider-neutral in-memory agreement seam. It will not prove:
+This proves only a provider-neutral in-memory agreement seam. It does **not** prove:
 
 - identity/authentication;
 - cryptographic signatures;
@@ -65,3 +114,9 @@ Even after a pass this will prove only a provider-neutral in-memory agreement se
 - production scale/performance.
 
 The current FNV receipt heads remain deterministic test checksums, not security primitives.
+
+## Next safe rung
+
+Do not jump directly to P2P consensus.
+
+First prove that the exact accepted-receipt seam survives a replaceable transport adapter while remaining semantically unchanged. A useful next test can compare an in-process transport with a simple browser/WebSocket-style message adapter under deliberate duplicate/reordered delivery, while keeping authority and reconstruction modules untouched.
