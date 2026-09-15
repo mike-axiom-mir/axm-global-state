@@ -1,0 +1,289 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>AXM Global State Browser Partial-Floor Adoption Proof</title>
+<pre id="status" data-status="ready">ready</pre>
+<script type="module">
+  import { normalizeAcceptedReceipts } from "../src/mutation-agreement.mjs";
+  import { resumeFromReplayCheckpoint } from "../src/replay-checkpoint.mjs";
+  import { advanceCatchup, createState, digestState } from "../src/temporal-state-kernel.mjs";
+
+  const STORAGE_KEY = "axm.global-state.proof-021.partial-floor-adoption/v0";
+  const statusNode = document.querySelector("#status");
+  let config = null;
+  let socket = null;
+  let finalEvidence = null;
+  let receivedThisProcess = 0;
+  let connectionAttempted = false;
+  let restoredReceiptCount = 0;
+  let localReceipts = [];
+  let lastVerifiedRevision = 0;
+  let lastVerifiedHead = null;
+  const syncRequests = [];
+
+  function clone(value) {
+    return structuredClone(value);
+  }
+
+  function updateStatus(status, body) {
+    statusNode.dataset.status = status;
+    statusNode.textContent = JSON.stringify(body ?? { status });
+  }
+
+  function fail(error) {
+    finalEvidence = { error: String(error?.stack || error) };
+    updateStatus("fail", finalEvidence);
+  }
+
+  function readStorage() {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw === null) return { schema: STORAGE_KEY, mode: "receipts", receipts: [] };
+    let parsed;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      throw new Error("browser-adoption-storage-invalid-json");
+    }
+    if (!parsed || parsed.schema !== STORAGE_KEY) throw new Error("browser-adoption-storage-schema-mismatch");
+    if (parsed.mode === "receipts") {
+      if (!Array.isArray(parsed.receipts)) throw new Error("browser-adoption-storage-receipts-required");
+      return parsed;
+    }
+    if (parsed.mode === "checkpoint") {
+      if (!parsed.checkpoint || typeof parsed.checkpoint !== "object") {
+        throw new Error("browser-adoption-storage-checkpoint-required");
+      }
+      if (!Array.isArray(parsed.suffixReceipts)) {
+        throw new Error("browser-adoption-storage-suffix-required");
+      }
+      return parsed;
+    }
+    throw new Error("browser-adoption-storage-mode-invalid");
+  }
+
+  function persistReceiptMode(receipts) {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      schema: STORAGE_KEY,
+      mode: "receipts",
+      receipts: clone(receipts)
+    }));
+  }
+
+  function persistCheckpointMode(checkpoint, suffixReceipts) {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      schema: STORAGE_KEY,
+      mode: "checkpoint",
+      checkpoint: clone(checkpoint),
+      suffixReceipts: clone(suffixReceipts)
+    }));
+  }
+
+  function normalizeLocalReceipts(receipts) {
+    return normalizeAcceptedReceipts(receipts, {
+      checkpointRevision: config.genesisRevision,
+      checkpointHead: config.genesisHead
+    });
+  }
+
+  function finishReceiptMode(normalized, { restoredMode = "receipts" } = {}) {
+    if (finalEvidence || normalized.toRevision < config.expectedRevision) return false;
+    const state = advanceCatchup(createState(config.baseState), config.targetTick, {
+      commands: normalized.commands,
+      rules: config.rules
+    });
+    finalEvidence = {
+      restoredMode,
+      adoptedCheckpoint: false,
+      offlineRestore: false,
+      connectionAttempted,
+      restoredReceiptCount,
+      receivedThisProcess,
+      syncRequests: [...syncRequests],
+      finalRevision: normalized.toRevision,
+      finalHead: normalized.head,
+      storedReceiptCount: normalized.receipts.length,
+      state,
+      digest: digestState(state)
+    };
+    updateStatus("pass", finalEvidence);
+    return true;
+  }
+
+  function finishCheckpointMode(stored, { offlineRestore }) {
+    if (typeof config.expectedCheckpointDigest !== "string" || config.expectedCheckpointDigest.length === 0) {
+      throw new Error("trusted-checkpoint-digest-required");
+    }
+    const resumed = resumeFromReplayCheckpoint({
+      checkpoint: stored.checkpoint,
+      expectedCheckpointDigest: config.expectedCheckpointDigest,
+      acceptedReceipts: stored.suffixReceipts,
+      targetTick: config.targetTick,
+      rules: config.rules
+    });
+    if (resumed.normalizedSuffix.toRevision !== config.expectedRevision) {
+      throw new Error(`browser-adoption-unexpected-final-revision:${resumed.normalizedSuffix.toRevision}`);
+    }
+    if (config.expectedHead && resumed.normalizedSuffix.head !== config.expectedHead) {
+      throw new Error("browser-adoption-unexpected-final-head");
+    }
+    finalEvidence = {
+      restoredMode: "checkpoint",
+      adoptedCheckpoint: true,
+      offlineRestore,
+      connectionAttempted,
+      restoredReceiptCount,
+      receivedThisProcess,
+      syncRequests: [...syncRequests],
+      checkpointRevision: resumed.checkpoint.mutationRevision,
+      checkpointTick: resumed.checkpoint.checkpointTick,
+      suffixReceiptCount: resumed.normalizedSuffix.receipts.length,
+      finalRevision: resumed.normalizedSuffix.toRevision,
+      finalHead: resumed.normalizedSuffix.head,
+      state: resumed.state,
+      digest: resumed.digest
+    };
+    updateStatus("pass", finalEvidence);
+  }
+
+  function ingestReceipt(receipt) {
+    receivedThisProcess += 1;
+    const normalized = normalizeLocalReceipts([...localReceipts, clone(receipt)]);
+    localReceipts = clone(normalized.receipts);
+    lastVerifiedRevision = normalized.toRevision;
+    lastVerifiedHead = normalized.head;
+    persistReceiptMode(localReceipts);
+    updateStatus("receiving", {
+      lastVerifiedRevision,
+      receivedThisProcess
+    });
+    finishReceiptMode(normalized);
+  }
+
+  function ingestCheckpointPackage(message) {
+    receivedThisProcess += 1;
+    if (!message.checkpoint || !Array.isArray(message.receipts)) {
+      throw new Error("browser-adoption-invalid-checkpoint-package");
+    }
+    if (Object.hasOwn(message, "expectedCheckpointDigest") || Object.hasOwn(message, "trustedCheckpointDigest")) {
+      throw new Error("browser-adoption-transport-must-not-supply-trust-anchor");
+    }
+    if (typeof config.expectedCheckpointDigest !== "string" || config.expectedCheckpointDigest.length === 0) {
+      throw new Error("trusted-checkpoint-digest-required");
+    }
+    if (message.checkpoint.mutationRevision < lastVerifiedRevision) {
+      throw new Error("browser-adoption-checkpoint-would-drop-local-revision");
+    }
+
+    const resumed = resumeFromReplayCheckpoint({
+      checkpoint: message.checkpoint,
+      expectedCheckpointDigest: config.expectedCheckpointDigest,
+      acceptedReceipts: message.receipts,
+      targetTick: config.targetTick,
+      rules: config.rules
+    });
+    if (resumed.normalizedSuffix.toRevision !== message.targetRevision) {
+      throw new Error("browser-adoption-target-revision-mismatch");
+    }
+    if (resumed.normalizedSuffix.head !== message.targetHead) {
+      throw new Error("browser-adoption-target-head-mismatch");
+    }
+    if (resumed.normalizedSuffix.toRevision !== config.expectedRevision) {
+      throw new Error("browser-adoption-config-revision-mismatch");
+    }
+    if (config.expectedHead && resumed.normalizedSuffix.head !== config.expectedHead) {
+      throw new Error("browser-adoption-config-head-mismatch");
+    }
+
+    persistCheckpointMode(message.checkpoint, message.receipts);
+    finalEvidence = {
+      restoredMode: "receipts",
+      adoptedCheckpoint: true,
+      offlineRestore: false,
+      connectionAttempted,
+      restoredReceiptCount,
+      receivedThisProcess,
+      syncRequests: [...syncRequests],
+      priorLocalRevision: lastVerifiedRevision,
+      checkpointRevision: resumed.checkpoint.mutationRevision,
+      checkpointTick: resumed.checkpoint.checkpointTick,
+      suffixReceiptCount: resumed.normalizedSuffix.receipts.length,
+      finalRevision: resumed.normalizedSuffix.toRevision,
+      finalHead: resumed.normalizedSuffix.head,
+      transportSuppliedTrustAnchor: false,
+      state: resumed.state,
+      digest: resumed.digest
+    };
+    updateStatus("pass", finalEvidence);
+  }
+
+  function connect() {
+    connectionAttempted = true;
+    socket = new WebSocket(config.websocketUrl);
+    socket.addEventListener("open", () => {
+      const request = { type: "sync.request", afterRevision: lastVerifiedRevision };
+      syncRequests.push(lastVerifiedRevision);
+      socket.send(JSON.stringify(request));
+      updateStatus("connected", {
+        lastVerifiedRevision,
+        lastVerifiedHead
+      });
+    });
+    socket.addEventListener("message", (event) => {
+      try {
+        const message = JSON.parse(event.data);
+        if (message?.type === "receipt" && message.receipt) {
+          ingestReceipt(message.receipt);
+          return;
+        }
+        if (message?.type === "checkpoint.package") {
+          ingestCheckpointPackage(message);
+          return;
+        }
+        throw new Error("browser-adoption-unexpected-websocket-message");
+      } catch (error) {
+        fail(error);
+      }
+    });
+    socket.addEventListener("error", () => {
+      if (!finalEvidence) updateStatus("transport-error", { lastVerifiedRevision });
+    });
+  }
+
+  window.__AXM_PARTIAL_FLOOR_ADOPTION__ = {
+    configure(nextConfig) {
+      config = clone(nextConfig);
+      try {
+        const stored = readStorage();
+        if (stored.mode === "checkpoint") {
+          restoredReceiptCount = stored.suffixReceipts.length;
+          finishCheckpointMode(stored, { offlineRestore: true });
+          return;
+        }
+
+        const normalized = normalizeLocalReceipts(stored.receipts);
+        localReceipts = clone(normalized.receipts);
+        restoredReceiptCount = localReceipts.length;
+        lastVerifiedRevision = normalized.toRevision;
+        lastVerifiedHead = normalized.head;
+        updateStatus("restored", {
+          mode: "receipts",
+          restoredReceiptCount,
+          lastVerifiedRevision,
+          lastVerifiedHead
+        });
+        if (finishReceiptMode(normalized)) return;
+        connect();
+      } catch (error) {
+        fail(error);
+      }
+    },
+    evidence() {
+      return clone(finalEvidence);
+    },
+    storageSnapshot() {
+      return localStorage.getItem(STORAGE_KEY);
+    },
+    close() {
+      if (socket && socket.readyState < WebSocket.CLOSING) socket.close();
+    }
+  };
+</script>

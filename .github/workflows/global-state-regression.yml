@@ -47,6 +47,9 @@ jobs:
       - name: Browser process restart continuity
         run: npm run test:persistence
 
+      - name: Browser partial-floor checkpoint adoption
+        run: npm run test:browser-checkpoint-adoption
+
       - name: Fully-cold end-to-end resume
         run: npm run test:cold-resume
 
