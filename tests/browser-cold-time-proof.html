@@ -1,0 +1,149 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>AXM Global State Cold Time Proof</title>
+<pre id="status" data-status="ready">ready</pre>
+<script type="module">
+  import { observeLogicalTime } from "../src/logical-time-anchor.mjs";
+  import { normalizeAcceptedReceipts } from "../src/mutation-agreement.mjs";
+  import { advanceCatchup, createState, digestState } from "../src/temporal-state-kernel.mjs";
+
+  const STORAGE_KEY = "axm.global-state.proof-011.receipts/v0";
+  const statusNode = document.querySelector("#status");
+  let config = null;
+  let socket = null;
+  let evidence = null;
+  let receipts = [];
+  let restoredReceiptCount = 0;
+  let receivedThisProcess = 0;
+  const syncRequests = [];
+
+  function setStatus(status, body = {}) {
+    statusNode.dataset.status = status;
+    statusNode.textContent = JSON.stringify(body);
+  }
+
+  function readStoredReceipts() {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw === null) return [];
+    const parsed = JSON.parse(raw);
+    if (!parsed || parsed.schema !== STORAGE_KEY || !Array.isArray(parsed.receipts)) {
+      throw new Error("stored-receipts-invalid-shape");
+    }
+    return structuredClone(parsed.receipts);
+  }
+
+  function persistVerifiedReceipts(nextReceipts) {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      schema: STORAGE_KEY,
+      receipts: structuredClone(nextReceipts)
+    }));
+  }
+
+  function normalized() {
+    return normalizeAcceptedReceipts(receipts, {
+      checkpointRevision: config.checkpointRevision,
+      checkpointHead: config.checkpointHead
+    });
+  }
+
+  function persistAfterVerification() {
+    const current = normalized();
+    receipts = structuredClone(current.receipts);
+    persistVerifiedReceipts(receipts);
+    return current;
+  }
+
+  function maybeFinish() {
+    if (evidence) return;
+    const current = normalized();
+    if (current.toRevision < config.expectedRevision) return;
+
+    const timeObservation = observeLogicalTime(config.timeAnchor, config.observedUnixMs);
+    const state = advanceCatchup(createState(config.baseState), timeObservation.targetTick, {
+      commands: current.commands,
+      rules: config.rules
+    });
+
+    evidence = {
+      restoredReceiptCount,
+      receivedThisProcess,
+      syncRequests: [...syncRequests],
+      normalizedRevision: current.toRevision,
+      normalizedHead: current.head,
+      proposalIds: current.receipts.map((receipt) => receipt.proposalId),
+      storedReceiptCount: receipts.length,
+      timeObservation,
+      state,
+      digest: digestState(state)
+    };
+    setStatus("pass", evidence);
+  }
+
+  function ingest(receipt) {
+    receivedThisProcess += 1;
+    receipts.push(structuredClone(receipt));
+    try {
+      const current = persistAfterVerification();
+      setStatus("receiving", {
+        restoredReceiptCount,
+        receivedThisProcess,
+        revision: current.toRevision
+      });
+      maybeFinish();
+    } catch (error) {
+      evidence = { error: String(error?.stack || error) };
+      setStatus("fail", evidence);
+    }
+  }
+
+  function connect() {
+    const current = normalized();
+    socket = new WebSocket(config.websocketUrl);
+    socket.addEventListener("open", () => {
+      syncRequests.push(current.toRevision);
+      socket.send(JSON.stringify({ type: "sync.request", afterRevision: current.toRevision }));
+    });
+    socket.addEventListener("message", (event) => {
+      try {
+        const message = JSON.parse(event.data);
+        if (message?.type !== "receipt" || !message.receipt) throw new Error("unexpected-websocket-message");
+        ingest(message.receipt);
+      } catch (error) {
+        evidence = { error: String(error?.stack || error) };
+        setStatus("fail", evidence);
+      }
+    });
+  }
+
+  window.__AXM_COLD_TIME_PROOF__ = {
+    configure(nextConfig) {
+      config = structuredClone(nextConfig);
+      try {
+        receipts = readStoredReceipts();
+        restoredReceiptCount = receipts.length;
+        const current = normalized();
+        setStatus("restored", {
+          restoredReceiptCount,
+          revision: current.toRevision
+        });
+        if (current.toRevision >= config.expectedRevision) {
+          maybeFinish();
+        } else {
+          connect();
+        }
+      } catch (error) {
+        evidence = { error: String(error?.stack || error) };
+        setStatus("fail", evidence);
+      }
+    },
+    evidence() {
+      return structuredClone(evidence);
+    },
+    storageSnapshot() {
+      return localStorage.getItem(STORAGE_KEY);
+    },
+    close() {
+      if (socket && socket.readyState < WebSocket.CLOSING) socket.close();
+    }
+  };
+</script>
