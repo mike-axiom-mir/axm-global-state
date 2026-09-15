@@ -1,13 +1,13 @@
 # Action Report — Proof 017: compacted accepted history with idempotence continuity
 
 Date: 2026-09-15
-Status: **CANDIDATE / CI PENDING / EXPERIMENTAL**
+Status: **TEST PASS / EXPERIMENTAL**
 
 ## Goal
 
 Reduce retained accepted-history payload without silently losing the ability to recognize an exact old proposal retry or reject conflicting reuse of an old proposal ID after restart.
 
-## Candidate mechanism
+## Tested mechanism
 
 A validated contiguous prefix of accepted receipts is replaced by:
 
@@ -21,20 +21,53 @@ A validated contiguous prefix of accepted receipts is replaced by:
 
 For an exact retry of a compacted proposal, the retry itself supplies the original actor/base/command fields. If its fingerprint matches the compact evidence, the original accepted receipt is deterministically rebuilt and its accepted head must match the retained evidence. Conflicting reuse of the same proposal ID still fails closed.
 
-## Candidate fixture
+The compacted store independently verifies direct duplicate appends as well. Reusing an old proposal ID/sequence/head with changed receipt content is rejected rather than acknowledged as a duplicate.
 
-- create 40 sequential accepted proposals with deliberately payload-heavy commands;
-- compact receipts 1–32;
-- retain full receipts 33–40;
-- require the compacted file to be materially smaller than the original receipt payload fixture;
-- retry compacted proposal 6 and require the exact original receipt to be reconstructed;
-- mutate proposal 6 and require `proposal-id-conflict`;
-- retry retained proposal 36 through the ordinary live-receipt path;
-- accept and persist proposal 41 after compaction;
-- hard logical restart by reopening only the compacted document plus its trusted compaction checkpoint;
-- repeat old compacted retry/conflict checks after restart;
-- require revision 41 continuity;
-- tamper compact proposal evidence without changing the trusted evidence digest and require fail-closed opening.
+## Tested fixture
+
+- created 40 sequential accepted proposals with deliberately payload-heavy commands;
+- compacted receipts 1–32;
+- retained full receipts 33–40;
+- retried compacted proposal 6 and reconstructed its exact original receipt;
+- changed proposal 6 and received `proposal-id-conflict`;
+- forged a direct compacted-receipt append with altered command bytes and received fail-closed rejection;
+- retried retained proposal 36 through the ordinary live-receipt path;
+- accepted and persisted proposal 41 after compaction;
+- reopened only the compacted document plus its trusted compaction checkpoint;
+- repeated old compacted retry/conflict behavior after restart;
+- recovered revision 41 continuity;
+- tampered compact proposal evidence without changing the trusted evidence digest and received fail-closed opening.
+
+## CI evidence
+
+Exact candidate head before this report-only evidence update: `43b48842104a7d4ddf1b38aee841acfbe1c00754`.
+
+Consolidated Global State regression:
+
+- run: `35015585474`
+- job: `104538052433`
+- result: **SUCCESS**
+- Proof 017 result: **PASS**
+- all retained deterministic, durable-history, cold-interval, Chromium portability, browser transport, reconnect, browser restart, cold-resume, and cold-time regressions: **PASS**
+
+Observed Proof 017 output:
+
+```text
+sourceReceipts: 40
+compactedThroughRevision: 32
+compactedProposalEvidenceEntries: 32
+retainedReceiptPayloads: 9
+currentRevision: 41
+oldExactRetryReconstructed: true
+oldConflictRejected: true
+forgedDirectAppendRejected: true
+preCheckpointSuffixRequestRejected: true
+fullReceiptBytes: 96649
+compactedBytes: 23377
+byteRatio: 0.242
+```
+
+The byte ratio is evidence for this deliberately payload-heavy fixture only. It is not claimed as a universal compression ratio.
 
 ## Explicit compaction floor
 
@@ -56,9 +89,9 @@ The existing v0 `FileReceiptHistory` remains unchanged. Proof 017 adds a separat
 
 ## Truth boundary
 
-Do not claim PASS until the consolidated exact-head Global State regression workflow succeeds.
+This is tested experimental compaction evidence, not production durability.
 
-Even after a pass, Proof 017 will not establish:
+Proof 017 does **not** establish:
 
 - lagging-client recovery across the compaction floor;
 - a product-state checkpoint format;
@@ -70,6 +103,8 @@ Even after a pass, Proof 017 will not establish:
 - concurrent writers or distributed consensus;
 - production-scale compaction performance.
 
-## Next safe rung if green
+The current compact evidence/checksum surfaces remain deterministic integrity evidence, not cryptographic security primitives.
+
+## Next safe rung
 
 Prove a **state/replay checkpoint + compacted receipt suffix** handoff for a client below the compaction floor. The client should adopt a verified checkpoint and then replay only the retained suffix, while the authority continues to preserve old proposal-ID conflict/idempotence evidence independently.
