@@ -243,3 +243,35 @@ export function normalizeAcceptedReceipts(
     })))
   });
 }
+
+export function restoreSingleSequencerAuthority({
+  checkpointRevision = 0,
+  checkpointHead,
+  acceptedReceipts = []
+} = {}) {
+  const normalized = normalizeAcceptedReceipts(acceptedReceipts, {
+    checkpointRevision,
+    checkpointHead
+  });
+  const authority = new SingleSequencerAuthority({ checkpointRevision, checkpointHead });
+
+  for (const receipt of normalized.receipts) {
+    const restoredReceipt = Object.freeze(clone(receipt));
+    const proposal = normalizeProposal({
+      id: receipt.proposalId,
+      actorId: receipt.actorId,
+      basedOnRevision: receipt.basedOnRevision,
+      basedOnHead: receipt.basedOnHead,
+      command: receipt.command
+    });
+    authority.revision = receipt.sequence;
+    authority.head = receipt.acceptedHead;
+    authority.accepted.push(restoredReceipt);
+    authority.acceptedByProposalId.set(proposal.id, {
+      proposalFingerprint: proposalFingerprint(proposal),
+      receipt: restoredReceipt
+    });
+  }
+
+  return authority;
+}
