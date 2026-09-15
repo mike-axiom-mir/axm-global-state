@@ -15,6 +15,33 @@ function stableStringify(value) {
   return `{${keys.map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(",")}}`;
 }
 
+function requireSafeInteger(value, code) {
+  if (!Number.isSafeInteger(value)) throw new Error(code);
+  return value;
+}
+
+function safeAdd(a, b, code = "integer-overflow") {
+  requireSafeInteger(a, code);
+  requireSafeInteger(b, code);
+  const result = a + b;
+  if (!Number.isSafeInteger(result)) throw new Error(code);
+  return result;
+}
+
+function safeMultiply(a, b, code = "integer-overflow") {
+  requireSafeInteger(a, code);
+  requireSafeInteger(b, code);
+  const result = a * b;
+  if (!Number.isSafeInteger(result)) throw new Error(code);
+  return result;
+}
+
+function compareCanonicalText(a, b) {
+  if (a < b) return -1;
+  if (a > b) return 1;
+  return 0;
+}
+
 export function digestState(state) {
   const text = stableStringify(state);
   let hash = 0x811c9dc5;
@@ -25,6 +52,31 @@ export function digestState(state) {
   return `fnv1a32:${hash.toString(16).padStart(8, "0")}`;
 }
 
+function validateState(state) {
+  if (!state || typeof state !== "object") throw new Error("invalid-state");
+  requireSafeInteger(state.tick, "invalid-state-tick");
+  if (state.tick < 0) throw new Error("invalid-state-tick");
+  requireSafeInteger(state.stockMilli, "invalid-state-stock");
+  requireSafeInteger(state.ratePerTickMilli, "invalid-state-rate");
+  requireSafeInteger(state.recurringCount, "invalid-state-recurring-count");
+  requireSafeInteger(state.lastRecurringTickProcessed, "invalid-state-recurring-tick");
+  if (typeof state.rulesVersion !== "string" || state.rulesVersion.length === 0) {
+    throw new Error("invalid-state-rules-version");
+  }
+  if (!Array.isArray(state.completions)) throw new Error("invalid-state-completions");
+  if (!state.appliedCommands || typeof state.appliedCommands !== "object" || Array.isArray(state.appliedCommands)) {
+    throw new Error("invalid-state-applied-commands");
+  }
+  for (const completion of state.completions) {
+    if (!completion || typeof completion !== "object") throw new Error("invalid-completion");
+    if (typeof completion.id !== "string" || completion.id.length === 0) throw new Error("invalid-completion-id");
+    requireSafeInteger(completion.atTick, "invalid-completion-tick");
+    if (completion.atTick < 0) throw new Error("invalid-completion-tick");
+    requireSafeInteger(completion.rewardMilli, "invalid-completion-reward");
+    if (typeof completion.applied !== "boolean") throw new Error("invalid-completion-applied");
+  }
+}
+
 export function createState({
   tick = 0,
   stockMilli = 0,
@@ -32,7 +84,7 @@ export function createState({
   rulesVersion = DEFAULT_RULES.version,
   completions = [],
 } = {}) {
-  return {
+  const state = {
     tick,
     stockMilli,
     ratePerTickMilli,
@@ -42,10 +94,15 @@ export function createState({
     completions: completions.map((item) => ({ ...item, applied: Boolean(item.applied) })),
     appliedCommands: {},
   };
+  validateState(state);
+  return state;
 }
 
 function normalizeRules(rules = {}) {
   const merged = { ...DEFAULT_RULES, ...rules };
+  if (typeof merged.version !== "string" || merged.version.length === 0) {
+    throw new Error("invalid-rules-version");
+  }
   if (!Number.isSafeInteger(merged.recurringEvery) || merged.recurringEvery <= 0) {
     throw new Error("invalid-recurring-interval");
   }
@@ -73,13 +130,20 @@ function commandFingerprint(command) {
   });
 }
 
-function validateCommands(commands) {
+function validateCommands(state, commands) {
+  if (!Array.isArray(commands)) throw new Error("invalid-commands");
   for (const command of commands) {
     if (!command || typeof command.id !== "string" || command.id.length === 0) {
       throw new Error("invalid-command-id");
     }
     if (!Number.isSafeInteger(command.atTick) || command.atTick < 0) {
       throw new Error("invalid-command-tick");
+    }
+    if (typeof command.type !== "string" || command.type.length === 0) {
+      throw new Error("invalid-command-type");
+    }
+    if (command.atTick < state.tick && state.appliedCommands[command.id] === undefined) {
+      throw new Error(`unapplied-command-before-current-tick:${command.id}`);
     }
   }
 }
@@ -101,7 +165,7 @@ function applyCommand(state, command) {
       if (!Number.isSafeInteger(payload.amountMilli)) {
         throw new Error("invalid-stock-add");
       }
-      state.stockMilli += payload.amountMilli;
+      state.stockMilli = safeAdd(state.stockMilli, payload.amountMilli, "stock-overflow");
       break;
     }
     case "rate.set": {
@@ -124,24 +188,21 @@ function applyBoundary(state, tick, commands, rules) {
     tick % rules.recurringEvery === 0 &&
     tick > state.lastRecurringTickProcessed
   ) {
-    state.recurringCount += 1;
-    state.stockMilli += rules.recurringRewardMilli;
+    state.recurringCount = safeAdd(state.recurringCount, 1, "recurring-count-overflow");
+    state.stockMilli = safeAdd(state.stockMilli, rules.recurringRewardMilli, "stock-overflow");
     state.lastRecurringTickProcessed = tick;
   }
 
   for (const completion of state.completions) {
     if (!completion.applied && completion.atTick === tick) {
-      if (!Number.isSafeInteger(completion.rewardMilli)) {
-        throw new Error("invalid-completion-reward");
-      }
-      state.stockMilli += completion.rewardMilli;
+      state.stockMilli = safeAdd(state.stockMilli, completion.rewardMilli, "stock-overflow");
       completion.applied = true;
     }
   }
 
   const atTick = commands
     .filter((command) => command.atTick === tick)
-    .sort((a, b) => a.id.localeCompare(b.id));
+    .sort((a, b) => compareCanonicalText(a.id, b.id));
 
   for (const command of atTick) {
     applyCommand(state, command);
@@ -155,26 +216,29 @@ export function advanceReference(
 ) {
   const state = clone(inputState);
   const actualRules = normalizeRules(rules);
+  validateState(state);
 
   if (state.rulesVersion !== actualRules.version) {
     throw new Error("rules-version-mismatch");
   }
 
   validateTarget(state, targetTick);
-  validateCommands(commands);
+  validateCommands(state, commands);
   applyBoundary(state, state.tick, commands, actualRules);
 
   while (state.tick < targetTick) {
-    state.stockMilli += state.ratePerTickMilli;
-    state.tick += 1;
+    state.stockMilli = safeAdd(state.stockMilli, state.ratePerTickMilli, "stock-overflow");
+    state.tick = safeAdd(state.tick, 1, "tick-overflow");
     applyBoundary(state, state.tick, commands, actualRules);
   }
 
+  validateState(state);
   return state;
 }
 
 function nextRecurringAfter(tick, every) {
-  return (Math.floor(tick / every) + 1) * every;
+  const candidate = (Math.floor(tick / every) + 1) * every;
+  return Number.isSafeInteger(candidate) ? candidate : Number.POSITIVE_INFINITY;
 }
 
 function nextBoundary(state, targetTick, commands, rules) {
@@ -209,27 +273,31 @@ export function advanceCatchup(
 ) {
   const state = clone(inputState);
   const actualRules = normalizeRules(rules);
+  validateState(state);
 
   if (state.rulesVersion !== actualRules.version) {
     throw new Error("rules-version-mismatch");
   }
 
   validateTarget(state, targetTick);
-  validateCommands(commands);
+  validateCommands(state, commands);
   applyBoundary(state, state.tick, commands, actualRules);
 
   while (state.tick < targetTick) {
     const boundary = nextBoundary(state, targetTick, commands, actualRules);
     const delta = boundary - state.tick;
-    state.stockMilli += state.ratePerTickMilli * delta;
+    const production = safeMultiply(state.ratePerTickMilli, delta, "stock-delta-overflow");
+    state.stockMilli = safeAdd(state.stockMilli, production, "stock-overflow");
     state.tick = boundary;
     applyBoundary(state, state.tick, commands, actualRules);
   }
 
+  validateState(state);
   return state;
 }
 
 export function makeReceipt(state) {
+  validateState(state);
   return {
     tick: state.tick,
     rulesVersion: state.rulesVersion,
