@@ -1,0 +1,70 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>AXM Global State BroadcastChannel Proof</title>
+<pre id="status" data-status="ready">ready</pre>
+<script type="module">
+  import { normalizeAcceptedReceipts } from "../src/mutation-agreement.mjs";
+  import { advanceCatchup, createState, digestState } from "../src/temporal-state-kernel.mjs";
+
+  const params = new URLSearchParams(location.search);
+  const channelName = params.get("channel") || "axm-global-state-proof-006";
+  const channel = new BroadcastChannel(channelName);
+  const statusNode = document.querySelector("#status");
+
+  let config = null;
+  let finalEvidence = null;
+  const received = [];
+
+  function updateStatus(status, body) {
+    statusNode.dataset.status = status;
+    statusNode.textContent = JSON.stringify(body ?? { status });
+  }
+
+  function maybeFinalize() {
+    if (!config || finalEvidence || received.length < config.expectedMessages) return;
+    try {
+      const normalized = normalizeAcceptedReceipts(received, {
+        checkpointRevision: config.checkpointRevision,
+        checkpointHead: config.checkpointHead
+      });
+      const state = advanceCatchup(createState(config.baseState), config.targetTick, {
+        commands: normalized.commands,
+        rules: config.rules
+      });
+      finalEvidence = {
+        receivedMessages: received.length,
+        normalizedRevision: normalized.toRevision,
+        normalizedHead: normalized.head,
+        proposalIds: normalized.receipts.map((receipt) => receipt.proposalId),
+        state,
+        digest: digestState(state)
+      };
+      updateStatus("pass", finalEvidence);
+    } catch (error) {
+      finalEvidence = { error: String(error?.stack || error) };
+      updateStatus("fail", finalEvidence);
+    }
+  }
+
+  channel.addEventListener("message", (event) => {
+    received.push(structuredClone(event.data));
+    maybeFinalize();
+  });
+
+  window.__AXM_BROADCAST_PROOF__ = {
+    configure(nextConfig) {
+      config = structuredClone(nextConfig);
+      updateStatus("configured", { expectedMessages: config.expectedMessages });
+      maybeFinalize();
+    },
+    send(messages) {
+      for (const message of messages) channel.postMessage(structuredClone(message));
+    },
+    evidence() {
+      return structuredClone(finalEvidence);
+    },
+    close() {
+      channel.close();
+    }
+  };
+</script>
