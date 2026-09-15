@@ -1,0 +1,46 @@
+name: Global State proof 014 time corroboration
+
+on:
+  pull_request:
+    paths:
+      - "src/logical-time-corroboration.mjs"
+      - "src/logical-time-admission.mjs"
+      - "src/logical-time-evidence.mjs"
+      - "tests/logical-time-corroboration-selftest.mjs"
+      - "tests/logical-time-admission-selftest.mjs"
+      - "tests/logical-time-evidence-selftest.mjs"
+      - "src/temporal-state-kernel.mjs"
+      - "docs/LOGICAL_TIME_CORROBORATION_V0.md"
+      - "docs/ACTION_REPORT_PROOF_014.md"
+      - "package.json"
+      - ".github/workflows/proof-014-time-corroboration.yml"
+  push:
+    branches: [main]
+    paths:
+      - "src/logical-time-corroboration.mjs"
+      - "src/logical-time-admission.mjs"
+      - "src/logical-time-evidence.mjs"
+      - "tests/logical-time-corroboration-selftest.mjs"
+      - "tests/logical-time-admission-selftest.mjs"
+      - "tests/logical-time-evidence-selftest.mjs"
+      - "src/temporal-state-kernel.mjs"
+      - "package.json"
+      - ".github/workflows/proof-014-time-corroboration.yml"
+
+jobs:
+  time-corroboration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Run deterministic proof suite
+        run: npm test
+      - name: Run time-evidence regression
+        run: npm run test:time-evidence
+      - name: Run time-admission regression
+        run: npm run test:time-admission
+      - name: Run time-corroboration proof
+        run: npm run test:time-corroboration
