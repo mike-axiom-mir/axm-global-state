@@ -18,7 +18,7 @@ import { createCheckpointAdoptionPackage } from '../src/checkpoint-adoption.mjs'
 import { advanceCatchup, createState, digestState } from '../src/temporal-state-kernel.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const tempDir = await mkdtemp(path.join(os.tmpdir(), 'axm-global-state-proof-020-'));
+const tempDir = await mkdtemp(path.join(os.tmpdir(), 'axm-global-state-proof-021-'));
 const userDataDir = path.join(tempDir, 'browser-profile');
 const targetTick = 7200;
 
@@ -169,7 +169,6 @@ let firstRelay = null;
 let secondRelay = null;
 
 try {
-  // Process 1: the browser verifies only R1 in the old genesis epoch and exits.
   firstRelay = await startRelay({ mode: 'genesis' });
   const stablePort = firstRelay.port;
   const first = await runBrowser({
@@ -186,9 +185,8 @@ try {
   await firstRelay.close();
   firstRelay = null;
 
-  // While the browser is absent, genesis advances through R3 and then compacts.
   const checkpointA = authority.checkpoint();
-  const acceptedB = authority.submit({
+  authority.submit({
     id: 'proposal-b',
     actorId: 'participant-b',
     basedOnRevision: checkpointA.revision,
@@ -196,7 +194,7 @@ try {
     command: { atTick: 90, type: 'rate.set', payload: { ratePerTickMilli: 5 } }
   });
   const checkpointB = authority.checkpoint();
-  const acceptedC = authority.submit({
+  authority.submit({
     id: 'proposal-c',
     actorId: 'participant-c',
     basedOnRevision: checkpointB.revision,
@@ -255,9 +253,6 @@ try {
   const expectedDigest = digestState(uninterrupted);
   assert.equal(expectedDigest, 'fnv1a32:ba4ed3fc');
 
-  // Process 2: same browser profile wakes on retired genesis revision 1. The
-  // relay sends a checkpoint-adoption package instead of pretending R4 alone can
-  // bridge the missing compacted revisions 2-3.
   secondRelay = await startRelay({ port: stablePort, mode: 'adoption', adoptionPackage });
   const second = await runBrowser({
     pageUrl: secondRelay.pageUrl,
@@ -285,8 +280,6 @@ try {
   assert.ok(!second.storageSnapshot.includes('proposal-b'));
   assert.ok(!second.storageSnapshot.includes('proposal-c'));
 
-  // Process 3: another completely fresh Chromium process re-verifies the stored
-  // adoption package and reconstructs without needing any network request.
   const requestCountBeforeThird = secondRelay.syncRequests.length;
   const third = await runBrowser({
     pageUrl: secondRelay.pageUrl,
@@ -301,8 +294,6 @@ try {
   assert.equal(third.evidence.normalizedRevision, 4);
   assert.equal(third.evidence.digest, expectedDigest);
 
-  // Tamper persistent browser storage, then start a fourth Chromium process. It
-  // must re-verify and fail rather than trusting its own disk.
   const tamperContext = await chromium.launchPersistentContext(userDataDir, { headless: true });
   const tamperPage = await tamperContext.newPage();
   await tamperPage.goto(secondRelay.pageUrl, { waitUntil: 'load' });
@@ -322,7 +313,7 @@ try {
   });
   assert.match(fourth.evidence.error, /checkpoint-epoch-compacted-state-digest-mismatch/);
 
-  console.log('AXM Global State proof 020 Chromium checkpoint adoption: PASS');
+  console.log('AXM Global State proof 021 Chromium checkpoint adoption: PASS');
   console.log({
     browserProcesses: 4,
     retiredEpochId: genesisEpochId,
