@@ -22,12 +22,16 @@ on:
 jobs:
   logical-time-evidence:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
+      - name: Install test dependencies
+        run: npm install --no-audit --no-fund
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
       - name: Run deterministic proof suite
         run: npm test
       - name: Run Proof 011 cold elapsed-time regression
