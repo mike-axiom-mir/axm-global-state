@@ -1,13 +1,13 @@
 # Action Report — Proof 009: durable accepted-history authority restart
 
 Date: 2026-09-15
-Status: **REPAIR CI PENDING / EXPERIMENTAL**
+Status: **TEST PASS / EXPERIMENTAL**
 
 ## Goal
 
 Prove that the small accepted-mutation authority can disappear completely and later recover its ordering/idempotence state from durable accepted receipt history without preserving a continuously running world simulation.
 
-## Candidate implementation
+## Tested implementation
 
 `src/durable-receipt-history.mjs` adds a deliberately small Node/file proof store.
 
@@ -22,85 +22,95 @@ On open/restart it re-runs `normalizeAcceptedReceipts(...)` across the retained 
 
 The file store writes a complete next snapshot to a temporary file and renames it into place before the service acknowledges the durable state in the proof harness.
 
+The child authority service now also serializes its IPC request boundary so proposal admission, durable append, rehydration, reads and shutdown cannot overlap out of order inside one authority process.
+
 ## Process-restart fixture
 
-The test uses a real child-process authority service and one temporary on-disk history file.
+The main fixture uses real child-process authority services and one temporary on-disk history file.
 
 ### Process 1
 
 1. initialize from trusted revision `0`;
-2. accept `proposal-a` as receipt `R1`;
-3. persist `R1`;
-4. acknowledge revision `1`;
-5. receive `SIGKILL`.
+2. accept/persist `proposal-a` as receipt `R1`;
+3. acknowledge revision `1`;
+4. receive `SIGKILL`.
 
 ### Process 2
 
-1. start from the same file only;
-2. recover revision/head `1` and retained `R1`;
-3. receive an exact retry of `proposal-a` based on old revision `0`;
-4. return the original `R1` as an idempotent duplicate without consuming revision `2`;
-5. reject conflicting reuse of `proposal-a` with different command content;
-6. accept a properly rebased `proposal-b` as `R2`;
-7. persist revision `2`;
-8. receive `SIGKILL`.
+1. recover revision/head `1` and retained `R1` from disk;
+2. return an exact retry of `proposal-a` as the original idempotent `R1`;
+3. reject conflicting reuse of `proposal-a`;
+4. accept/persist properly rebased `proposal-b` as `R2`;
+5. receive `SIGKILL`.
 
 ### Process 3
 
-1. recover revision/head `2` from disk;
-2. expose `R1,R2` for a client asking after revision `0`;
-3. expose only `R2` for a client asking after revision `1`;
-4. expose nothing after revision `2`;
+1. recover revision/head `2`;
+2. serve `R1,R2` after revision `0`;
+3. serve only `R2` after revision `1`;
+4. serve nothing after revision `2`;
 5. reconstruct the same final Temporal State digest from recovered history.
 
-The test also writes a separately corrupted history file where `R1` command bytes are changed without updating its accepted head. Opening that history must fail closed with a receipt-digest mismatch.
+The test also corrupts retained `R1` bytes without changing the accepted receipt head and requires open/recovery to fail closed with a receipt-digest mismatch.
 
-## Prior serial-path CI evidence
+## Concurrency review finding and repair
 
-Pre-repair candidate head: `3897f67c624f6590b41e8bc5a5ab9e7e72db1c84`.
+The first serial-path green run exposed a missing adversarial case during review: the original async IPC listener could process overlapping `proposal.submit` handlers while one durable append awaited filesystem I/O. That allowed in-memory sequencing and final rename order to diverge in principle, so an older durable snapshot could land after a newer acknowledged snapshot.
+
+The repair:
+
+- serializes all child authority requests through one explicit queue;
+- adds a test-only persistence delay to widen the old race window;
+- submits `R1` and a correctly rebased `R2` without awaiting the first response;
+- requires both acknowledgements to succeed in sequence;
+- hard-kills the service after both acknowledgements;
+- starts a fresh process and requires revision `2` plus both proposal IDs to survive.
+
+This distinguishes a genuine single-process async race from the still-out-of-scope case of multiple authority processes writing the same history concurrently.
+
+## Exact repaired CI evidence
+
+Repaired candidate head before this report-only evidence update: `16e48c641ca289576e0a2aeb081dc37787ec7f46`.
 
 Proof 009 workflow:
 
-- run: `35002710428`
-- job: `104494768011`
+- run: `35003694877`
+- job: `104498056786`
 - result: **SUCCESS**
 - runner: Ubuntu 24.04 / Node.js `v22.23.2`
 
-Observed result on that serial-only fixture:
+Observed result:
 
 ```text
 AXM Global State proof 009 durable receipt authority restart: PASS
-authorityProcesses: 3
-hardRestarts: 2
+authorityProcesses: 5
+hardRestarts: 3
 retainedReceipts: 2
 recoveredRevision: 2
 recoveredHead: fnv1a32:e4b47257
 duplicateProposalAfterRestart: true
 conflictAfterRestartRejected: true
+concurrentSubmitSerialized: true
+concurrentRecoveredRevision: 2
 finalStateDigest: fnv1a32:bab65c1b
 ```
 
-That evidence remains valid for the serial request path it exercised, but it is **not sufficient to claim the repaired current head passed**.
+The same exact repaired head also passed all seven other active regression gates: consumer-time contract, browser process restart, WebSocket reconnect, Chromium portability, long-absence scaling, browser-local transport, and mutation agreement.
 
-## Concurrency review finding and repair
+## What this proves
 
-A review after the first green run found a continuity race in the proof service itself.
+Within the bounded tested Node/Linux/file fixture:
 
-The original IPC listener used an async message handler directly. While one accepted proposal awaited filesystem persistence, a second `proposal.submit` message could enter another handler and mutate the in-memory sequencer concurrently. Because durable writes use asynchronous temp-write + rename, acknowledged authority order and final rename order could diverge. In the bad interleaving, a newer `R1,R2` durable snapshot could be followed by an older `R1` rename, so a later hard restart could recover revision `1` after revision `2` had effectively been admitted.
-
-The repair on the current branch:
-
-- serializes the child authority IPC boundary through one explicit request queue;
-- keeps proposal admission, durable append, rehydration, reads and shutdown in one observable service order;
-- adds a test-only delay before first-proposal persistence to deliberately widen the old race window;
-- fires `R1` and a correctly rebased `R2` request without waiting for the first response;
-- requires both acknowledgements to succeed in sequence;
-- hard-kills the service;
-- requires the next process to recover revision `2` and both proposal IDs.
-
-Current repaired candidate head before this report update: `9c32801547508f83b97d44b466b7a2f7d1bd3dd6`.
-
-Exact-head CI for this repaired concurrency case is pending. Do **not** promote Proof 009 back to PASS until that gate and the relevant regressions succeed on the repaired head.
+- the accepted-history authority can be hard-killed after durable acknowledgement and recover revision/head from retained receipts;
+- exact retries remain idempotent after process loss;
+- conflicting proposal-ID reuse remains rejected after process loss;
+- new accepted history can continue from the recovered head;
+- later hard restarts recover the complete acknowledged receipt sequence;
+- changed durable receipt bytes without a matching accepted head fail closed;
+- overlapping requests at one authority process are serialized across asynchronous persistence;
+- the latest acknowledged concurrent revision survives hard restart;
+- recovered accepted history reconstructs the same canonical product-state digest;
+- none of this requires the authority process to continuously simulate the product/world while idle.
 
 ## Architectural boundary
 
@@ -118,17 +128,17 @@ A compatible runtime still reconstructs product state from trusted checkpoint + 
 
 ## Important continuity findings
 
-Persisting only the latest revision/head is insufficient for full idempotence. After restart, the authority also needs enough retained proposal identity/history to know that an old exact retry was already accepted and to distinguish it from conflicting reuse.
+Persisting only the latest revision/head is insufficient for full idempotence. After restart, the authority also needs enough retained proposal identity/history to recognize an exact old retry and distinguish it from conflicting reuse.
 
-A second finding is now explicit: a single sequencer must serialize its own mutation/admission boundary across asynchronous durable writes. “One authority process” is not enough if multiple async handlers can overlap inside that process.
+A single sequencer must also serialize its own mutation/admission boundary across asynchronous durable writes. “One authority process” is not enough if multiple async handlers can overlap inside that process.
 
 This proof keeps the full bounded accepted receipt window after the checkpoint. Future compaction/checkpoint work must explicitly decide what proposal-ID/idempotence evidence survives compaction.
 
 ## Truth boundary
 
-Even after repaired CI passes, this proof will establish only a bounded single-authority-process JSON-file history store on the tested Node/Linux surface. It will not prove:
+This proof establishes only a bounded single-authority-process JSON-file history store on the tested Node/Linux surface. It does not prove:
 
-- database/filesystem transactional guarantees beyond the tested temp-write + rename path;
+- filesystem transactional guarantees beyond the tested temp-write + rename path;
 - `fsync`/power-loss durability;
 - arbitrary crash points before durable acknowledgement;
 - recovery after a failed durable write while the same process continues;
@@ -143,7 +153,7 @@ Even after repaired CI passes, this proof will establish only a bounded single-a
 
 ## Next safe rung
 
-After repaired exact-head CI passes, combine the two continuity sides in one end-to-end cold-resume test:
+Combine the two proven continuity sides in one end-to-end cold-resume test:
 
 - browser process persists its verified revision/history and disappears;
 - authority/history service process also disappears;
