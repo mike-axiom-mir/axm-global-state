@@ -1,6 +1,6 @@
 {
   "name": "axm-global-state",
-  "version": "0.0.20-experimental",
+  "version": "0.0.21-experimental",
   "private": true,
   "type": "module",
   "scripts": {
