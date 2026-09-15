@@ -309,6 +309,15 @@ export class CompactedFileReceiptHistory {
       if (!compacted || compacted.sequence !== receipt.sequence || compacted.acceptedHead !== receipt.acceptedHead) {
         throw new Error('compacted-receipt-append-conflict');
       }
+      const proposal = proposalFromReceipt(receipt);
+      if (fingerprintMutationProposal(proposal) !== compacted.proposalFingerprint) {
+        throw new Error('compacted-receipt-append-conflict');
+      }
+      reconstructAcceptedReceiptFromProposal({
+        proposal,
+        sequence: compacted.sequence,
+        acceptedHead: compacted.acceptedHead
+      });
       return Object.freeze({ duplicate: true, revision: this.checkpoint().revision, head: this.checkpoint().head });
     }
 

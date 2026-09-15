@@ -102,6 +102,16 @@ try {
   assert.equal(oldDuplicatePersist.duplicate, true);
   assert.equal(history.checkpoint().revision, 40);
 
+  // The store independently verifies compacted duplicates too. A caller cannot
+  // bypass the authority wrapper by reusing the old ID/sequence/head with changed
+  // receipt content and still receive a duplicate acknowledgement.
+  const forgedOldReceipt = structuredClone(full.receipts[5]);
+  forgedOldReceipt.command.payload.marker = 'forged-direct-append';
+  await assert.rejects(
+    () => history.append(forgedOldReceipt),
+    /compacted-receipt-append-conflict/
+  );
+
   await assert.rejects(
     async () => restoredAuthority.submit({
       ...structuredClone(full.proposals[5]),
@@ -201,6 +211,7 @@ try {
     currentRevision: reopened.checkpoint().revision,
     oldExactRetryReconstructed: true,
     oldConflictRejected: true,
+    forgedDirectAppendRejected: true,
     preCheckpointSuffixRequestRejected: true,
     fullReceiptBytes,
     compactedBytes,
