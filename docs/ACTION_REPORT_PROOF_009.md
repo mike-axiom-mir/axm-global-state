@@ -1,13 +1,13 @@
 # Action Report — Proof 009: durable accepted-history authority restart
 
 Date: 2026-09-15
-Status: **TEST PASS / EXPERIMENTAL**
+Status: **REPAIR CI PENDING / EXPERIMENTAL**
 
 ## Goal
 
 Prove that the small accepted-mutation authority can disappear completely and later recover its ordering/idempotence state from durable accepted receipt history without preserving a continuously running world simulation.
 
-## Tested implementation
+## Candidate implementation
 
 `src/durable-receipt-history.mjs` adds a deliberately small Node/file proof store.
 
@@ -53,11 +53,11 @@ The test uses a real child-process authority service and one temporary on-disk h
 4. expose nothing after revision `2`;
 5. reconstruct the same final Temporal State digest from recovered history.
 
-The test also writes a separately corrupted history file where `R1` command bytes are changed without updating its accepted head. Opening that history fails closed with a receipt-digest mismatch.
+The test also writes a separately corrupted history file where `R1` command bytes are changed without updating its accepted head. Opening that history must fail closed with a receipt-digest mismatch.
 
-## CI evidence
+## Prior serial-path CI evidence
 
-Candidate head before this report-only evidence update: `3897f67c624f6590b41e8bc5a5ab9e7e72db1c84`.
+Pre-repair candidate head: `3897f67c624f6590b41e8bc5a5ab9e7e72db1c84`.
 
 Proof 009 workflow:
 
@@ -66,7 +66,7 @@ Proof 009 workflow:
 - result: **SUCCESS**
 - runner: Ubuntu 24.04 / Node.js `v22.23.2`
 
-Observed result:
+Observed result on that serial-only fixture:
 
 ```text
 AXM Global State proof 009 durable receipt authority restart: PASS
@@ -80,20 +80,27 @@ conflictAfterRestartRejected: true
 finalStateDigest: fnv1a32:bab65c1b
 ```
 
-The same head also kept the existing deterministic, mutation-agreement, Chromium portability, browser-local transport and WebSocket reconnect regressions green as their runners completed.
+That evidence remains valid for the serial request path it exercised, but it is **not sufficient to claim the repaired current head passed**.
 
-## What this proves
+## Concurrency review finding and repair
 
-Within the bounded tested Node/Linux/file fixture:
+A review after the first green run found a continuity race in the proof service itself.
 
-- the accepted-history authority can be hard-killed after durable acknowledgement and later reconstruct its revision/head from retained receipts;
-- exact retry of a previously accepted proposal remains idempotent after process loss;
-- conflicting reuse of that proposal ID remains rejected after process loss;
-- new accepted history can continue from the recovered head;
-- a second hard restart recovers the two-receipt history and serves correct receipt suffixes;
-- recovered accepted history reconstructs the same canonical product-state digest as before;
-- changed durable receipt bytes without a matching accepted head fail closed;
-- none of this requires the authority process to continuously simulate the product/world while idle.
+The original IPC listener used an async message handler directly. While one accepted proposal awaited filesystem persistence, a second `proposal.submit` message could enter another handler and mutate the in-memory sequencer concurrently. Because durable writes use asynchronous temp-write + rename, acknowledged authority order and final rename order could diverge. In the bad interleaving, a newer `R1,R2` durable snapshot could be followed by an older `R1` rename, so a later hard restart could recover revision `1` after revision `2` had effectively been admitted.
+
+The repair on the current branch:
+
+- serializes the child authority IPC boundary through one explicit request queue;
+- keeps proposal admission, durable append, rehydration, reads and shutdown in one observable service order;
+- adds a test-only delay before first-proposal persistence to deliberately widen the old race window;
+- fires `R1` and a correctly rebased `R2` request without waiting for the first response;
+- requires both acknowledgements to succeed in sequence;
+- hard-kills the service;
+- requires the next process to recover revision `2` and both proposal IDs.
+
+Current repaired candidate head before this report update: `9c32801547508f83b97d44b466b7a2f7d1bd3dd6`.
+
+Exact-head CI for this repaired concurrency case is pending. Do **not** promote Proof 009 back to PASS until that gate and the relevant regressions succeed on the repaired head.
 
 ## Architectural boundary
 
@@ -109,21 +116,23 @@ It does not:
 
 A compatible runtime still reconstructs product state from trusted checkpoint + accepted history + deterministic rules/time semantics.
 
-## Important continuity finding
+## Important continuity findings
 
 Persisting only the latest revision/head is insufficient for full idempotence. After restart, the authority also needs enough retained proposal identity/history to know that an old exact retry was already accepted and to distinguish it from conflicting reuse.
+
+A second finding is now explicit: a single sequencer must serialize its own mutation/admission boundary across asynchronous durable writes. “One authority process” is not enough if multiple async handlers can overlap inside that process.
 
 This proof keeps the full bounded accepted receipt window after the checkpoint. Future compaction/checkpoint work must explicitly decide what proposal-ID/idempotence evidence survives compaction.
 
 ## Truth boundary
 
-This evidence proves only a bounded single-process-at-a-time JSON-file history store on the tested Node/Linux surface. It does not prove:
+Even after repaired CI passes, this proof will establish only a bounded single-authority-process JSON-file history store on the tested Node/Linux surface. It will not prove:
 
 - database/filesystem transactional guarantees beyond the tested temp-write + rename path;
 - `fsync`/power-loss durability;
 - arbitrary crash points before durable acknowledgement;
 - recovery after a failed durable write while the same process continues;
-- concurrent writers;
+- multiple authority processes writing the same history concurrently;
 - multi-host consensus/failover;
 - authentication/signatures;
 - malicious local storage protection;
@@ -134,7 +143,7 @@ This evidence proves only a bounded single-process-at-a-time JSON-file history s
 
 ## Next safe rung
 
-Combine the two proven continuity sides in one end-to-end restart test:
+After repaired exact-head CI passes, combine the two continuity sides in one end-to-end cold-resume test:
 
 - browser process persists its verified revision/history and disappears;
 - authority/history service process also disappears;
