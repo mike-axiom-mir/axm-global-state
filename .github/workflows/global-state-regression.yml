@@ -55,3 +55,6 @@ jobs:
 
       - name: Browser checkpoint adoption after epoch compaction
         run: npm run test:checkpoint-adoption-browser
+
+      - name: Browser replay checkpoint after partial compaction
+        run: npm run test:partial-replay-browser
