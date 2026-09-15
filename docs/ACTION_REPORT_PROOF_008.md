@@ -1,13 +1,13 @@
 # Action Report — Proof 008: browser process restart continuity
 
 Date: 2026-09-15
-Status: **CANDIDATE / CI PENDING / EXPERIMENTAL**
+Status: **TEST PASS / EXPERIMENTAL**
 
 ## Goal
 
 Prove that a participant runtime can disappear completely, return later, restore its last verified accepted history from browser-local durable storage, request only later accepted receipts, and reconstruct the same current Global State.
 
-## Candidate proof
+## Tested proof
 
 The proof uses a real persistent Chromium profile and two separate Chromium process lifetimes.
 
@@ -42,9 +42,46 @@ The proof deliberately stores accepted receipt evidence rather than simply stori
 
 The WebSocket relay still does not run world simulation or decide product state.
 
-## Why this matters
+## CI evidence
 
-This is closer to the original Global State goal than a reconnect inside one process:
+Candidate head before this report-only evidence update: `6cb12c35b6e6b93616775c80c02516b252054aa7`.
+
+Proof 008 workflow:
+
+- run: `35001959475`
+- job: `104492237235`
+- result: **SUCCESS**
+- runner: Ubuntu 24.04 / Node.js `v22.23.2`
+- browser: real Playwright Chromium in a persistent user-data profile
+
+Observed result:
+
+```text
+AXM Global State proof 008 browser process restart continuity: PASS
+storage: localStorage in persistent Chromium profile
+browserProcesses: 2
+syncRequests: [0, 1]
+restoredReceiptCount: 1
+normalizedRevision: 2
+acceptedHead: fnv1a32:e4b47257
+finalStateDigest: fnv1a32:bab65c1b
+```
+
+The same CI job also kept the deterministic proof suite and Proof 007 WebSocket reconnect regression green before running the new process-restart seam.
+
+## What this proves
+
+Within this bounded Chromium fixture:
+
+- verified accepted history survives a full Chromium process/context shutdown;
+- a fresh Chromium process can recover that local evidence from the same persistent profile;
+- the recovered receipt chain is revalidated from the trusted checkpoint rather than trusting a naked stored revision;
+- the new process requests only history after its recovered verified revision;
+- the relay therefore sends `R2` rather than resending a whole reconstructed world snapshot;
+- the returned accepted history reconstructs the same final canonical state/digest as Node;
+- continuous world simulation is not required merely because no browser process is alive.
+
+## Why this matters
 
 ```text
 verified checkpoint + accepted history
@@ -53,24 +90,20 @@ persist locally
             ↓
 all browser compute disappears
             ↓
-time / absence
-            ↓
 new browser process
             ↓
-restore verified local evidence
+restore + verify local evidence
             ↓
 request only missed accepted history
             ↓
 reconstruct current state
 ```
 
-Nothing needs to keep the full world simulation alive merely because the user closed the browser.
+This directly supports the Global State direction: continuity can be encoded in compact trusted state/history and deterministic rules rather than in an always-running simulation process.
 
 ## Truth boundary
 
-Do not claim Proof 008 PASS until exact-head CI succeeds.
-
-Even after a pass this will prove only Chromium persistent-profile `localStorage` continuity for the bounded fixture. It will not prove:
+This evidence proves only Chromium persistent-profile `localStorage` continuity for the bounded fixture. It does not prove:
 
 - IndexedDB or other storage backends;
 - storage durability guarantees under OS/device failure;
@@ -84,7 +117,9 @@ Even after a pass this will prove only Chromium persistent-profile `localStorage
 - arbitrary browser compatibility;
 - production storage quotas/performance.
 
-## Next safe rung if green
+`localStorage` is useful here as the smallest real durability proof, not a claim that it is the final storage architecture.
+
+## Next safe rung
 
 Test **durable accepted-history authority across relay/server process restart** separately from world simulation.
 
