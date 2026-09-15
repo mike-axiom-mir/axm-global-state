@@ -1,0 +1,134 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>AXM Global State WebSocket Reconnect Proof</title>
+<pre id="status" data-status="ready">ready</pre>
+<script type="module">
+  import { normalizeAcceptedReceipts } from "../src/mutation-agreement.mjs";
+  import { advanceCatchup, createState, digestState } from "../src/temporal-state-kernel.mjs";
+
+  const statusNode = document.querySelector("#status");
+  let config = null;
+  let socket = null;
+  let finalEvidence = null;
+  let reconnectTimer = null;
+  let connectionAttempts = 0;
+  let lastVerifiedRevision = 0;
+  const received = [];
+  const syncRequests = [];
+
+  function updateStatus(status, body) {
+    statusNode.dataset.status = status;
+    statusNode.textContent = JSON.stringify(body ?? { status });
+  }
+
+  function maybeFinalize() {
+    if (!config || finalEvidence || received.length < config.expectedMessages) return;
+    try {
+      const normalized = normalizeAcceptedReceipts(received, {
+        checkpointRevision: config.checkpointRevision,
+        checkpointHead: config.checkpointHead
+      });
+      lastVerifiedRevision = normalized.toRevision;
+      if (normalized.toRevision < config.expectedRevision) return;
+      const state = advanceCatchup(createState(config.baseState), config.targetTick, {
+        commands: normalized.commands,
+        rules: config.rules
+      });
+      finalEvidence = {
+        receivedMessages: received.length,
+        connectionAttempts,
+        syncRequests: [...syncRequests],
+        normalizedRevision: normalized.toRevision,
+        normalizedHead: normalized.head,
+        proposalIds: normalized.receipts.map((receipt) => receipt.proposalId),
+        state,
+        digest: digestState(state)
+      };
+      updateStatus("pass", finalEvidence);
+    } catch (error) {
+      finalEvidence = { error: String(error?.stack || error) };
+      updateStatus("fail", finalEvidence);
+    }
+  }
+
+  function ingestReceipt(receipt) {
+    received.push(structuredClone(receipt));
+    try {
+      const normalized = normalizeAcceptedReceipts(received, {
+        checkpointRevision: config.checkpointRevision,
+        checkpointHead: config.checkpointHead
+      });
+      lastVerifiedRevision = normalized.toRevision;
+      updateStatus("receiving", {
+        receivedMessages: received.length,
+        lastVerifiedRevision,
+        connectionAttempts
+      });
+      maybeFinalize();
+    } catch (error) {
+      finalEvidence = { error: String(error?.stack || error) };
+      updateStatus("fail", finalEvidence);
+    }
+  }
+
+  function connect() {
+    if (!config || finalEvidence) return;
+    connectionAttempts += 1;
+    socket = new WebSocket(config.websocketUrl);
+
+    socket.addEventListener("open", () => {
+      const request = { type: "sync.request", afterRevision: lastVerifiedRevision };
+      syncRequests.push(lastVerifiedRevision);
+      socket.send(JSON.stringify(request));
+      updateStatus("connected", { connectionAttempts, lastVerifiedRevision });
+    });
+
+    socket.addEventListener("message", (event) => {
+      let message;
+      try {
+        message = JSON.parse(event.data);
+      } catch (error) {
+        finalEvidence = { error: `invalid-json:${String(error)}` };
+        updateStatus("fail", finalEvidence);
+        return;
+      }
+      if (message?.type !== "receipt" || !message.receipt) {
+        finalEvidence = { error: "unexpected-websocket-message" };
+        updateStatus("fail", finalEvidence);
+        return;
+      }
+      ingestReceipt(message.receipt);
+    });
+
+    socket.addEventListener("close", () => {
+      if (finalEvidence) return;
+      if (connectionAttempts >= config.maxConnectionAttempts) {
+        finalEvidence = { error: "reconnect-attempt-limit" };
+        updateStatus("fail", finalEvidence);
+        return;
+      }
+      clearTimeout(reconnectTimer);
+      reconnectTimer = setTimeout(connect, config.reconnectDelayMs);
+      updateStatus("reconnecting", { connectionAttempts, lastVerifiedRevision });
+    });
+  }
+
+  window.__AXM_WS_PROOF__ = {
+    configure(nextConfig) {
+      config = structuredClone(nextConfig);
+      lastVerifiedRevision = config.checkpointRevision;
+      updateStatus("configured", {
+        checkpointRevision: config.checkpointRevision,
+        expectedRevision: config.expectedRevision
+      });
+      connect();
+    },
+    evidence() {
+      return structuredClone(finalEvidence);
+    },
+    close() {
+      clearTimeout(reconnectTimer);
+      if (socket && socket.readyState < WebSocket.CLOSING) socket.close();
+    }
+  };
+</script>
