@@ -47,6 +47,12 @@ function makeBaseState() {
   return createState(structuredClone(baseStateConfig));
 }
 
+function physicalState(state) {
+  const snapshot = structuredClone(state);
+  delete snapshot.appliedCommands;
+  return snapshot;
+}
+
 const genesisHead = `state:${digestState(makeBaseState())}`;
 const genesisEpochId = 'genesis';
 const authority = createSingleSequencerAuthority({ checkpointRevision: 0, checkpointHead: genesisHead });
@@ -62,7 +68,6 @@ const acceptedA = authority.submit({
 async function startRelay({ port = 0, mode, adoptionPackage = null } = {}) {
   const syncRequests = [];
   let relayFailure = null;
-
   const httpServer = createServer(async (request, response) => {
     try {
       const url = new URL(request.url, 'http://127.0.0.1');
@@ -92,21 +97,18 @@ async function startRelay({ port = 0, mode, adoptionPackage = null } = {}) {
           throw new Error('invalid-sync-request');
         }
         syncRequests.push(structuredClone(message));
-
         if (mode === 'genesis') {
           assert.equal(message.epochId, genesisEpochId);
           assert.equal(message.afterRevision, 0);
           socket.send(JSON.stringify({ type: 'receipt', receipt: acceptedA.receipt }));
           return;
         }
-
         if (mode === 'adoption') {
           assert.equal(message.epochId, genesisEpochId, 'lagging browser must identify its retired epoch');
           assert.equal(message.afterRevision, 1, 'lagging browser must report its last verified retired-epoch revision');
           socket.send(JSON.stringify({ type: 'checkpoint.adoption', package: adoptionPackage }));
           return;
         }
-
         throw new Error(`unexpected-relay-mode:${mode}`);
       } catch (error) {
         relayFailure = error;
@@ -121,7 +123,6 @@ async function startRelay({ port = 0, mode, adoptionPackage = null } = {}) {
   });
   const address = httpServer.address();
   if (!address || typeof address === 'string') throw new Error('invalid-relay-address');
-
   return {
     port: address.port,
     pageUrl: `http://127.0.0.1:${address.port}/tests/browser-checkpoint-adoption-proof.html`,
@@ -144,7 +145,6 @@ async function runBrowser({ pageUrl, websocketUrl, expectedRevision, expectStatu
     if (message.type() === 'error') browserErrors.push(message.text());
   });
   page.on('pageerror', (error) => browserErrors.push(String(error)));
-
   await page.goto(pageUrl, { waitUntil: 'load' });
   await page.evaluate((config) => window.__AXM_CHECKPOINT_ADOPTION_PROOF__.configure(config), {
     websocketUrl,
@@ -243,15 +243,29 @@ try {
   assert.ok(!packageText.includes('proposal-b'));
   assert.ok(!packageText.includes('proposal-c'));
 
-  const uninterrupted = advanceCatchup(makeBaseState(), targetTick, {
-    commands: [...genesisHistory.commands, {
-      id: acceptedD.receipt.proposalId,
-      ...structuredClone(acceptedD.receipt.command)
-    }],
+  const epochCommand = {
+    id: acceptedD.receipt.proposalId,
+    ...structuredClone(acceptedD.receipt.command)
+  };
+  const adoptedReference = advanceCatchup(structuredClone(epoch.compactedState), targetTick, {
+    commands: [epochCommand],
     rules
   });
-  const expectedDigest = digestState(uninterrupted);
+  const expectedDigest = digestState(adoptedReference);
   assert.equal(expectedDigest, 'fnv1a32:ba4ed3fc');
+
+  const uninterrupted = advanceCatchup(makeBaseState(), targetTick, {
+    commands: [...genesisHistory.commands, epochCommand],
+    rules
+  });
+  assert.equal(digestState(uninterrupted), 'fnv1a32:809851c1');
+  assert.deepEqual(
+    physicalState(adoptedReference),
+    physicalState(uninterrupted),
+    'epoch adoption must preserve physical state while intentionally retiring old applied-command identity metadata'
+  );
+  assert.equal(Object.keys(adoptedReference.appliedCommands).length, 1);
+  assert.equal(Object.keys(uninterrupted.appliedCommands).length, 4);
 
   secondRelay = await startRelay({ port: stablePort, mode: 'adoption', adoptionPackage });
   const second = await runBrowser({
@@ -274,7 +288,8 @@ try {
   assert.equal(second.evidence.activeCheckpointTick, 3600);
   assert.equal(second.evidence.normalizedRevision, 4);
   assert.equal(second.evidence.retainedReceiptCount, 1);
-  assert.deepEqual(second.evidence.state, uninterrupted);
+  assert.deepEqual(second.evidence.state, adoptedReference);
+  assert.deepEqual(physicalState(second.evidence.state), physicalState(uninterrupted));
   assert.equal(second.evidence.digest, expectedDigest);
   assert.match(second.storageSnapshot, /checkpoint-adoption/);
   assert.ok(!second.storageSnapshot.includes('proposal-b'));
@@ -324,9 +339,12 @@ try {
     adoptedRevision: 4,
     retainedSuffixReceipts: second.evidence.retainedReceiptCount,
     oldCompactedReceiptPayloadsTransferred: false,
+    retiredHistoricalCommandIds: 3,
     persistedAdoptionReverifiedAfterRestart: true,
     persistedCheckpointTamperRejected: true,
-    finalStateDigest: expectedDigest
+    physicalStatePreserved: true,
+    adoptedStateDigest: expectedDigest,
+    uncompactedReferenceDigest: digestState(uninterrupted)
   });
 } finally {
   if (firstRelay) await firstRelay.close().catch(() => {});
