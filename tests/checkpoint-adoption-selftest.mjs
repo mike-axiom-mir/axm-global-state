@@ -107,9 +107,6 @@ assert.equal(
   qualifyEpochProposalId(epoch.epochId, 'proposal-a')
 );
 
-// A lagging client only knows revision 1 of the retired genesis epoch, but its
-// local admitted logical time has already advanced to 7200. Its current state is
-// therefore both mutation-stale and later-in-time than the new checkpoint.
 const laggingHistory = normalizeAcceptedReceipts([acceptedA.receipt], {
   checkpointRevision: 0,
   checkpointHead: genesisHead
@@ -121,8 +118,6 @@ const laggingState = advanceCatchup(makeBaseState(), 7200, {
 assert.equal(laggingState.tick, 7200);
 assert.equal(laggingHistory.toRevision, 1);
 
-// Sending only the retained post-checkpoint receipt to the old genesis base is
-// not a valid catch-up strategy: revisions 2 and 3 no longer exist in the suffix.
 assert.throws(
   () => normalizeAcceptedReceipts([acceptedNewEpoch.receipt], {
     checkpointRevision: 0,
@@ -141,7 +136,6 @@ assert.equal(adoptionPackage.acceptedReceipts.length, 1);
 assert.equal(adoptionPackage.epoch.checkpointRevision, 3);
 assert.equal(Object.keys(adoptionPackage.epoch.compactedState.appliedCommands).length, 0);
 
-// Transport/storage round-trip must not change verification behavior.
 const transportedPackage = JSON.parse(JSON.stringify(adoptionPackage));
 const adopted = normalizeCheckpointAdoptionPackage(transportedPackage, {
   expectedPriorEpochId: 'genesis',
@@ -154,9 +148,6 @@ assert.equal(adopted.receipts.length, 1);
 assert.equal(adopted.commands.length, 1);
 assert.equal(adopted.commands[0].id, acceptedNewEpoch.receipt.proposalId);
 
-// Adoption is atomic at the product layer: the checkpoint itself is older than
-// the client's admitted logical time, so reconstruct immediately to the already
-// admitted target. No client-visible logical rollback is required.
 const adoptedFuture = advanceCatchup(structuredClone(adopted.compactedState), laggingState.tick, {
   commands: adopted.commands,
   rules
@@ -175,8 +166,6 @@ assert.deepEqual(
 assert.equal(Object.keys(adoptedFuture.appliedCommands).length, 1);
 assert.equal(Object.keys(uncompactedReference.appliedCommands).length, 4);
 
-// The package does not contain old receipt payloads. Historical effects are
-// represented by the checkpoint state + epoch identity instead.
 const serializedPackage = JSON.stringify(adoptionPackage);
 assert.ok(!serializedPackage.includes('proposal-b'));
 assert.ok(!serializedPackage.includes('proposal-c'));
@@ -252,7 +241,7 @@ assert.throws(
   /checkpoint-epoch-receipt-mismatch:4/
 );
 
-console.log('AXM Global State proof 018 lagging client checkpoint adoption: PASS');
+console.log('AXM Global State proof 019 lagging client checkpoint adoption: PASS');
 console.log({
   laggingClientRevision: laggingHistory.toRevision,
   laggingClientTick: laggingState.tick,
