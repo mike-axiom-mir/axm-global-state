@@ -1,0 +1,21 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>AXM Global State Proof 002</title>
+<pre id="result" data-status="pending">pending</pre>
+<script type="module">
+  import { buildPortableProof } from "./portable-fixture.mjs";
+
+  const result = document.querySelector("#result");
+  try {
+    const proof = buildPortableProof();
+    result.dataset.status = "pass";
+    result.textContent = JSON.stringify(proof);
+    document.title = "AXM Global State Proof 002 PASS";
+  } catch (error) {
+    result.dataset.status = "fail";
+    result.textContent = JSON.stringify({
+      error: String(error?.stack || error),
+    });
+    document.title = "AXM Global State Proof 002 FAIL";
+  }
+</script>
