@@ -1,6 +1,6 @@
 {
   "name": "axm-global-state",
-  "version": "0.0.8-experimental",
+  "version": "0.0.9-experimental",
   "private": true,
   "type": "module",
   "scripts": {
@@ -9,7 +9,8 @@
     "test:transport": "node tests/browser-local-receipt-transport-selftest.mjs",
     "test:websocket": "node tests/websocket-reconnect-receipt-sync-selftest.mjs",
     "test:persistence": "node tests/browser-process-restart-continuity-selftest.mjs",
-    "test:all": "npm test && npm run test:browser && npm run test:transport && npm run test:websocket && npm run test:persistence"
+    "test:durable-authority": "node tests/durable-receipt-authority-restart-selftest.mjs",
+    "test:all": "npm test && npm run test:browser && npm run test:transport && npm run test:websocket && npm run test:persistence && npm run test:durable-authority"
   },
   "devDependencies": {
     "playwright": "1.55.0",
