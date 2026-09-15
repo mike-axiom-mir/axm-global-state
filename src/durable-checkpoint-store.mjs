@@ -78,9 +78,10 @@ async function writeImmutable(filePath, document) {
   }
 }
 
-function packageCore({ parentGenerationId, epoch, normalized }) {
+function packageCore({ generationId, parentGenerationId, epoch, normalized }) {
   return {
     schema: DURABLE_CHECKPOINT_PACKAGE_SCHEMA,
+    generationId: requireText(generationId, 'checkpoint-generation-id-required'),
     parentGenerationId,
     epoch,
     receipts: normalized.receipts,
@@ -99,12 +100,11 @@ function buildPackage({ generationId, parentGenerationId, epoch: inputEpoch, rec
     checkpointHead: epoch.checkpointHead,
     epochId: epoch.epochId
   });
-  const core = packageCore({ parentGenerationId, epoch, normalized });
+  const core = packageCore({ generationId, parentGenerationId, epoch, normalized });
   const packageDigest = digestValue(core);
 
   return Object.freeze({
     ...core,
-    generationId: requireText(generationId, 'checkpoint-generation-id-required'),
     packageDigest
   });
 }
@@ -174,6 +174,9 @@ async function readCurrentPackage(directory) {
     if (error?.code === 'ENOENT') throw new Error('checkpoint-pointer-generation-missing');
     if (error instanceof SyntaxError) throw new Error('checkpoint-generation-invalid-json');
     throw error;
+  }
+  if (document.generationId !== pointer.generationId) {
+    throw new Error('checkpoint-pointer-generation-id-mismatch');
   }
   if (document.packageDigest !== pointer.packageDigest) {
     throw new Error('checkpoint-pointer-package-digest-mismatch');
@@ -263,6 +266,7 @@ export class DurableCheckpointStore {
       if (error instanceof SyntaxError) throw new Error('checkpoint-generation-invalid-json');
       throw error;
     }
+    if (document.generationId !== generationId) throw new Error('checkpoint-prepared-generation-id-mismatch');
     if (document.packageDigest !== packageDigest) throw new Error('checkpoint-prepared-digest-mismatch');
     if (document.parentGenerationId !== basedOnGenerationId) throw new Error('checkpoint-prepared-parent-mismatch');
 
