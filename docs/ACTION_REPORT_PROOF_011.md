@@ -1,48 +1,84 @@
 # Action Report — Proof 011: fully cold elapsed-time catch-up
 
 Date: 2026-09-15
-Status: **CANDIDATE / CI PENDING / EXPERIMENTAL**
+Status: **TEST PASS / EXPERIMENTAL**
 
 ## Goal
 
-Compose fully cold continuity with deterministic elapsed-time catch-up so that the reconstructed present can move forward even though no browser, relay, or authority process evaluated product/world transitions during the cold interval.
+Compose fully cold continuity with deterministic elapsed-time catch-up so the reconstructed present can move forward even though no browser, relay, or authority process evaluated product/world transitions during the cold interval.
 
-## Candidate flow
+## Tested flow
 
 1. Authority accepts and durably retains `R1`.
-2. A real Chromium process verifies `R1` and reconstructs the system at logical tick `600`, then exits while retaining only its verified receipt prefix.
+2. Real Chromium verifies `R1` and reconstructs logical tick `600`, then exits while retaining only its verified receipt prefix.
 3. The relay closes.
 4. While the browser is absent, authority accepts `R2`; its command takes effect at logical tick `900`.
 5. Authority stops. Browser, relay, and authority are all absent.
 6. No product/world transition is evaluated during the cold interval.
 7. On wake, a fresh authority restores accepted revision `2` from durable receipt history.
-8. A fresh Chromium process restores verified revision `1` from its persistent profile and requests only receipts after revision `1`.
+8. Fresh Chromium restores verified revision `1` from its persistent profile and requests only receipts after revision `1`.
 9. It receives only `R2` and is supplied a later trusted logical target tick of `86,400`.
-10. Browser reconstruction advances to tick `86,400` and must match an independent Node reconstruction from the freshly recovered authority history.
+10. Browser reconstruction advances to tick `86,400` and matches an independent measured Node reconstruction from freshly recovered authority history.
 
-## Required evidence
+## CI evidence
 
-- sleep tick: `600`;
-- wake tick: `86,400`;
-- cold logical interval: `85,800` ticks;
-- browser restores one verified receipt and revision `1`;
-- authority restores accepted revision `2`;
-- wake sync requests only `afterRevision=1`;
-- exactly one missing accepted receipt crosses after wake;
-- final canonical state tick is `86,400`;
-- browser and independent Node state/digest are identical;
-- measured catch-up avoids more than `80,000` individual per-tick transitions.
+Candidate head before this report-only evidence update: `ad3ed38956dca5af217ae2e0d74878eeb31159ad`.
+
+Proof 011 workflow:
+
+- run: `35008896569`
+- job: `104515561594`
+- result: **SUCCESS**
+- runner: Ubuntu 24.04 / Node.js `v22.23.2`
+- real Chromium: Playwright Chromium `140.0.7339.16`
+
+Observed result:
+
+```text
+AXM Global State proof 011 fully cold elapsed-time catch-up: PASS
+sleepTick: 600
+wakeTick: 86400
+coldLogicalTicks: 85800
+authorityRestoredRevision: 2
+requestedMissingAfterRevision: 1
+receivedAfterWake: 1
+catchupJumps: 1441
+perTickTransitionsAvoided: 84959
+finalRevision: 2
+finalStateDigest: fnv1a32:74f37cf0
+```
+
+The same workflow first passed the deterministic suite, repaired Proof 009 durable-authority regression, and Proof 010 fully-cold-resume regression.
+
+## What this proves
+
+Within the bounded tested fixture:
+
+- Chromium had previously verified revision `1` and state at logical tick `600`;
+- authority later retained revision `2`, including a command whose effect begins at tick `900`;
+- browser, relay, and authority were then all absent;
+- no product/world transitions were evaluated during that absence;
+- after wake, authority restored revision `2` and Chromium restored its verified revision-`1` receipt prefix;
+- Chromium requested only the missing suffix after revision `1` and received one accepted receipt;
+- the reconstructed present advanced to logical tick `86,400`;
+- state changes after the sleep point were therefore resolved on wake rather than continuously simulated during absence;
+- browser state/digest exactly matched the independent Node reconstruction at the same later tick;
+- catch-up used `1,441` meaningful jumps and avoided `84,959` individual per-tick transitions.
 
 ## Architectural boundary
 
-This proof does not introduce a new clock authority. The later logical tick is a trusted input to reconstruction. The proof asks: **given a later trusted logical tick, can a compatible runtime truthfully reconstruct the later present after complete process absence?**
+This proof does **not** introduce or validate a clock authority. The later logical tick is a trusted input to reconstruction. The proven question is narrower:
 
-The source, authentication, consensus, drift, and anti-tamper properties of a shared current logical tick remain a separate research problem.
+> Given a later trusted logical tick, can a compatible runtime truthfully reconstruct the later present after complete process absence?
+
+For this fixture, yes.
+
+The source, authentication, consensus, drift, rollback resistance, and anti-tamper properties of a shared current logical tick remain separate research problems.
 
 The browser continuity store remains accepted receipts rather than opaque product/world state. The authority remains accepted-history storage/admission rather than an always-running simulation process. The relay remains transport only.
 
 ## Truth boundary
 
-Do not claim Proof 011 PASS until exact-head real Chromium CI succeeds.
+This remains bounded experimental evidence. It does not establish a production global clock, secure time authority, distributed consensus, database durability, hostile-network protection, broad browser compatibility, large-history performance, or universal product time semantics.
 
-Even after a pass, this remains bounded experimental evidence. It does not establish a production global clock, secure time authority, distributed consensus, database durability, hostile-network protection, broad browser compatibility, or universal product time semantics.
+A next safe research rung is to define and adversarially test the **logical-time evidence contract** itself: what evidence a wake-up runtime is allowed to accept as the current tick, how rollback/conflict is detected, and how a single-device/offline mode differs from a shared-world mode.
