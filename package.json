@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node tests/offline-catchup-selftest.mjs && node tests/portability-contract-selftest.mjs && node tests/long-absence-scaling-selftest.mjs && node tests/consumer-time-contract-selftest.mjs && node tests/mutation-agreement-selftest.mjs && node tests/logical-time-evidence-selftest.mjs && node tests/logical-time-admission-selftest.mjs && node tests/logical-time-corroboration-selftest.mjs && node tests/logical-time-interval-selftest.mjs && node tests/checkpoint-epoch-compaction-selftest.mjs && node tests/partial-receipt-payload-compaction-selftest.mjs && node tests/checkpoint-adoption-selftest.mjs",
+    "test": "node tests/offline-catchup-selftest.mjs && node tests/portability-contract-selftest.mjs && node tests/long-absence-scaling-selftest.mjs && node tests/consumer-time-contract-selftest.mjs && node tests/mutation-agreement-selftest.mjs && node tests/logical-time-evidence-selftest.mjs && node tests/logical-time-admission-selftest.mjs && node tests/logical-time-corroboration-selftest.mjs && node tests/logical-time-interval-selftest.mjs && node tests/checkpoint-epoch-compaction-selftest.mjs && node tests/partial-receipt-payload-compaction-selftest.mjs && node tests/checkpoint-adoption-selftest.mjs && node tests/replay-checkpoint-compaction-floor-selftest.mjs",
     "test:browser": "node tests/browser-portability-selftest.mjs",
     "test:transport": "node tests/browser-local-receipt-transport-selftest.mjs",
     "test:websocket": "node tests/websocket-reconnect-receipt-sync-selftest.mjs",
@@ -20,6 +20,7 @@
     "test:checkpoint-epoch": "node tests/checkpoint-epoch-compaction-selftest.mjs",
     "test:partial-compaction": "node tests/partial-receipt-payload-compaction-selftest.mjs",
     "test:checkpoint-adoption": "node tests/checkpoint-adoption-selftest.mjs",
+    "test:replay-checkpoint": "node tests/replay-checkpoint-compaction-floor-selftest.mjs",
     "test:checkpoint-adoption-browser": "node tests/browser-checkpoint-adoption-selftest.mjs",
     "test:all": "npm test && npm run test:browser && npm run test:transport && npm run test:websocket && npm run test:persistence && npm run test:durable-authority && npm run test:cold-resume && npm run test:cold-time && npm run test:cold-interval && npm run test:checkpoint-adoption-browser"
   },
